@@ -1,0 +1,86 @@
+{
+  "name": "pi-claude-tether",
+  "version": "0.11.0",
+  "description": "Use your Claude subscription in Pi through the official Claude Code CLI",
+  "main": "index.ts",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "claude",
+    "claude-code",
+    "provider"
+  ],
+  "pi": {
+    "extensions": [
+      "index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kyraneth/pi-claude-tether.git"
+  },
+  "homepage": "https://github.com/kyraneth/pi-claude-tether",
+  "bugs": {
+    "url": "https://github.com/kyraneth/pi-claude-tether/issues"
+  },
+  "author": "kyraneth",
+  "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "dependencies": {
+    "cross-spawn": "^7.0.6",
+    "pi-tether-core": "0.1.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@eslint/js": "^9.39.4",
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.0",
+    "typebox": "1.3.27",
+    "typescript-eslint": "^8.57.0",
+    "vitest": "^3.0.0"
+  },
+  "scripts": {
+    "scan:public": "node scripts/check-public-tree.mjs",
+    "export:manifest": "node scripts/export-manifest",
+    "test": "vitest run --reporter=verbose",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format:check": "prettier --check .",
+    "test:e2e": "bash scripts/e2e-stub.sh",
+    "test:e2e:continuity": "out=$(mktemp -d); python3 scripts/continuity-proof.py --pi-bin \"$(node scripts/resolve-pi-cli.mjs)\" --source-extension-dir . --output-dir \"$out/proof\" --stub --transient-retry",
+    "test:e2e:failover": "out=$(mktemp -d); python3 scripts/continuity-proof.py --pi-bin \"$(node scripts/resolve-pi-cli.mjs)\" --source-extension-dir . --output-dir \"$out/proof\" --stub --failover"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "index.ts",
+    "src/",
+    "README.md",
+    "SOURCE.md",
+    "CHANGELOG.md",
+    "assets/*.svg",
+    "assets/*.mmd",
+    "docs/DETAILS.md",
+    "docs/ACCOUNT-FAILOVER.md",
+    "docs/ARCHITECTURE.md",
+    "docs/CONTEXT-POLICY.md",
+    "docs/REQUEST-LEDGER.md",
+    "LICENSE",
+    "scripts/update-cli.sh",
+    "scripts/package-dirs.sh",
+    "scripts/resolve-pi-cli.mjs",
+    "scripts/continuity-proof.py",
+    "tests/e2e/continuity-extension.ts"
+  ]
+}

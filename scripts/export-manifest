@@ -1,0 +1,36 @@
+#!/usr/bin/env node
+import { readdirSync, lstatSync, readFileSync, mkdirSync, copyFileSync, chmodSync, existsSync } from 'node:fs';
+import { dirname, resolve, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+process.umask(0o002);
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// Only these roots are public. New directories never enter the export implicitly.
+const allowlist = ['.gitignore', 'LICENSE', 'README.md', 'SOURCE.md', 'CHANGELOG.md', 'package.json', 'index.ts', 'src', 'tests', 'docs', 'assets', 'vitest.config.ts', 'tsconfig.json', 'eslint.config.mjs',
+  'scripts/export-manifest', 'scripts/check-public-tree.mjs', 'scripts/continuity-proof.py', 'scripts/e2e-live.sh', 'scripts/e2e-stub.sh', 'scripts/package-dirs.sh', 'scripts/resolve-pi-cli.mjs', 'scripts/update-cli.sh'];
+const files = [];
+function visit(path) {
+  const absolute = join(root, path), stat = lstatSync(absolute);
+  if (stat.isSymbolicLink()) throw new Error('Public export refuses symbolic links');
+  // Python proof runs create bytecode caches, never source export inputs.
+  if (stat.isDirectory()) for (const child of readdirSync(absolute).sort()) {
+    if (child !== '__pycache__') visit(`${path}/${child}`);
+  }
+  else if (stat.isFile()) files.push({ path, bytes: stat.size, sha256: createHash('sha256').update(readFileSync(absolute)).digest('hex') });
+  else throw new Error('Public export refuses nonregular files');
+}
+for (const path of allowlist) visit(path);
+files.sort((a, b) => a.path.localeCompare(b.path));
+if (new Set(files.map(f => f.path)).size !== files.length) throw new Error('Duplicate export entry');
+const output = process.argv[2];
+if (output) {
+  const destination = resolve(output);
+  if (existsSync(destination)) throw new Error('Choose a fresh export destination; prior artifacts are preserved');
+  mkdirSync(destination, { recursive: true });
+  for (const file of files) {
+    const target = join(destination, file.path); mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(join(root, file.path), target); chmodSync(target, lstatSync(join(root, file.path)).mode & 0o777);
+    if (createHash('sha256').update(readFileSync(target)).digest('hex') !== file.sha256) throw new Error('Export readback differs');
+  }
+}
+console.log(JSON.stringify({ version: 1, files }, null, 2));

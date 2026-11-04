@@ -1,0 +1,16 @@
+sequenceDiagram
+  accTitle: The tool call path through the Claude tether
+  accDescr: Pi sends the prompt to the model through the tether and the official CLI. The model's tool call comes back the same way to Pi, which runs the tool and saves the result, and only then does the result go back to the model.
+  participant P as Pi
+  participant T as Tether
+  participant C as Official Claude Code CLI
+  participant S as Claude model
+  P->>S: prompt, tools and history, through the tether and CLI
+  S-->>C: tool call
+  C-->>T: tool call
+  T-->>P: tool call
+  Note over P: runs the tool, saves the result
+  P->>T: result
+  T->>C: result
+  C->>S: result
+  S-->>P: answer
