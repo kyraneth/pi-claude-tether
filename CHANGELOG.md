@@ -1,8 +1,15 @@
 # Changelog
 
+## 0.11.1 — 2026-11-05
+
+- A pre-model OAuth refresh collision ("another Claude Code process is refreshing it") now retires the process and returns a transient error, so Pi's own retry decides, instead of killing the turn.
+- Long error tool results that the official client clips (head 5000, marker, tail 5000) are accepted as that exact projection and recorded as declared-lossy, instead of forcing a full cache rewrite. Any other change still fails.
+- An empty `PI_CLAUDE_CLI_CONTEXT` selects Pi-owned mode rather than the old CLI-owned mode. Stored prompt files are written with restricted permissions.
+- Runtime allocation errors name the boundary that failed.
+
 ## 0.11.0 — 2026-10-28
 
-Prepared first public release as `pi-claude-tether` (not yet published).
+First public release as `pi-claude-tether`.
 
 - Explicit public export and npm allowlists; policy-backed public-tree scan.
 - Public data, state and ledger roots remain unchanged. Unknown package names now use a generic legacy data directory; no automatic credential migration.

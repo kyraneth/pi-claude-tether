@@ -87,6 +87,15 @@ run_pi() {
     </dev/null
 }
 
+# A non-directory runtime base reproduces a blocked allocation without changing
+# permissions or relying on the invoking user. Check Pi surfaces its owner.
+BLOCKED="$(TMPDIR=/dev/null XDG_RUNTIME_DIR=/dev/null run_pi "magic word" 2>&1 || true)"
+if ! grep -q 'Claude tether runtime directory unavailable:' <<<"$BLOCKED"; then
+  echo "e2e FAILED: blocked runtime directory was not diagnosed" >&2
+  echo "$BLOCKED" >&2
+  exit 1
+fi
+
 OUT="$(run_pi "magic word")"
 require_stub
 
@@ -125,6 +134,15 @@ fi
 # provider would send: off as thinking disabled (pi passes no level for off),
 # anything else as budget + effort + summaries.
 ARGV_FILE="$WORK_DIR/argv.jsonl"
+# Empty context must retain Pi ownership at the actual CLI boundary: native
+# tools are disabled. This also detects the old empty-means-legacy regression.
+: >"$ARGV_FILE"
+EMPTY_OUT="$(CLAUDE_STUB_ARGV_FILE="$ARGV_FILE" PI_CLAUDE_CLI_CONTEXT='' run_pi 'magic word')"
+require_stub
+if ! grep -q 'PORT-OK' <<<"$EMPTY_OUT" || ! grep -q '"--tools",""' "$ARGV_FILE"; then
+  echo "e2e FAILED: empty context did not disable native Claude tools" >&2
+  exit 1
+fi
 run_thinking() {
   : >"$ARGV_FILE"
   cd "$WORK_DIR" && HOME="$TEST_HOME" CLAUDE_STUB_ARGV_FILE="$ARGV_FILE" PI_CLAUDE_CLI_KEEPALIVE_MS=0 PATH="$STUB_DIR:$PATH" ${TIMEOUT[@]+"${TIMEOUT[@]}"} \

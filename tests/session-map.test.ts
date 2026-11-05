@@ -5,6 +5,8 @@ import {
   writeFileSync,
   readFileSync,
   readdirSync,
+  statSync,
+  chmodSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -161,6 +163,15 @@ describe("session-map sidecar", () => {
       const prompt = "line one\n\nline two \u2014 with unicode\n";
       setSystemPrompt("cli-1", prompt);
       expect(getSystemPrompt("cli-1")).toBe(prompt);
+    });
+
+    it("restricts new and previously permissive prompt files to owner access", () => {
+      setSystemPrompt("cli-1", "ONE");
+      const path = join(dir, "sysprompt", "cli-1.txt");
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      chmodSync(path, 0o644);
+      setSystemPrompt("cli-1", "TWO");
+      expect(statSync(path).mode & 0o777).toBe(0o600);
     });
 
     it("returns undefined for a session recorded before prompts were stored", () => {

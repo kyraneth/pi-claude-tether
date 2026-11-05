@@ -181,7 +181,8 @@ if (!process.env.CONTINUITY_OBSERVER_OWNER_PID) {
           if (seeded) {
             const receipt = receipts[0];
             const expectedSha256 = sha(JSON.stringify(receipt.content));
-            receipt.content = [{type:'text',text:'SEEDED-RECEIPT-BODY-LOSS'}];
+            receipt.content = process.env.CONTINUITY_RECEIPT_SHAPE === 'long-error' && typeof receipt.content === 'string'
+              ? '!' + receipt.content.slice(1) : [{type:'text',text:'SEEDED-RECEIPT-BODY-LOSS'}];
             raw = JSON.stringify(m);
             emit({type:'seeded_receipt_mismatch',pid:child.pid,toolUseId:receipt.tool_use_id,
               expectedSha256,observedSha256:sha(JSON.stringify(receipt.content))});
@@ -325,8 +326,12 @@ function user(msg) {
       turn.delivered = true;
       lastToolResult = textOf(response.content);
       // Verified CLI 2.1.283 representation: only single-text errors trim.
-      const echo = response.isError && response.content?.length === 1 && response.content[0].type === 'text'
+      let echo = response.isError && response.content?.length === 1 && response.content[0].type === 'text'
         ? response.content[0].text.trim() : response.content;
+      // Official error codec (2.1.284/2.1.311): 10k retained, 1024 allowance.
+      // This stub qualifies the receipt boundary, never live cache economics.
+      if (response.isError && typeof echo === 'string' && echo.length > 11024)
+        echo = echo.slice(0,5000) + `\n\n... [${echo.length-10000} characters truncated] ...\n\n` + echo.slice(-5000);
       emit({type:'user',message:{role:'user',content:[{type:'tool_result',tool_use_id:id,
         content:echo,is_error:!!response.isError}]},session_id:session,parent_tool_use_id:null});
       if (mode === 'plain') {
@@ -339,9 +344,19 @@ function user(msg) {
     return;
   }
   if (text.includes('CONTINUITY-RETRY')) {
-    if (retrySeen) throw new Error('Transient retry resent the original failed user/prefix');
-    retrySeen = true;
-    result('Request timed out'); return;
+    if (process.env.CONTINUITY_REFRESH_RETRY !== '1') {
+      if (retrySeen) throw new Error('Transient retry resent the original failed user/prefix');
+      retrySeen = true;
+      result('Request timed out'); return;
+    }
+    const markerFile = process.env.CONTINUITY_STUB_LOG + '.refresh-seen';
+    if (!fs.existsSync(markerFile)) {
+      fs.writeFileSync(markerFile, 'failed before model');
+      trace({type:'refresh_failure_before_model'});
+      result('Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again'); return;
+    }
+    trace({type:'refresh_retry_received_user'});
+    cycle('RETRY-OK'); result(); return;
   }
   if (failover && !failoverB && text.includes('FAILOVER')) { limitRejected(); return; }
   let marker;
@@ -1033,6 +1048,8 @@ async def run(args):
             env["PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS"] = "1"
     if args.seed_receipt_mismatch:
         env["CONTINUITY_RECEIPT_SEED"] = str(output / "receipt-mismatch.seed")
+    if args.refresh_retry:
+        env["CONTINUITY_REFRESH_RETRY"] = "1"
     if args.context:
         env["PI_CLAUDE_CLI_CONTEXT"] = args.context
     if args.stub_cli or args.stub:
@@ -1155,7 +1172,7 @@ async def run(args):
             if message.get("responseModel") and message["responseModel"] != MODEL:
                 raise RuntimeError("Native assistant physical response model differs")
             if message.get("stopReason") in ("error", "aborted"):
-                if not (native_retry and message is not messages[-1] and message.get("stopReason") == "error" and "timed out" in message.get("errorMessage", "").lower()):
+                if not (native_retry and message is not messages[-1] and message.get("stopReason") == "error" and ("timed out" in message.get("errorMessage", "").lower() or "failed to refresh oauth token" in message.get("errorMessage", "").lower())):
                     raise RuntimeError(f"Unexpected native assistant stop: {message.get('stopReason')}")
         text = "".join(b.get("text", "") for b in messages[-1].get("content", []) if b.get("type") == "text").strip()
         if text != marker:
@@ -1340,7 +1357,7 @@ async def run(args):
             qualification_failures.append("Native Pi did not exit cleanly")
         if measurements["physicalCoverageGaps"] or not measurements["physicalRequests"]:
             qualification_failures.append("Physical request accounting has explicit coverage gaps")
-        expected_starts = 3 if args.failover else (2 if args.seed_receipt_mismatch else 1)
+        expected_starts = 3 if args.failover else (2 if args.seed_receipt_mismatch or args.refresh_retry else 1)
         if measurements["totalCliStarts"] != expected_starts:
             qualification_failures.append("Unexpected main CLI process count for the requested seeded/non-seeded workload")
         cli_rows = [json.loads(line) for line in (output / "cli-metadata.jsonl").read_text().splitlines()]
@@ -1359,6 +1376,12 @@ async def run(args):
                 old_exit = [row for row in cli_rows if row.get("pid") == starts[0]["pid"] and row.get("type") in ("cli_exit", "cli_close")]
                 if not old_exit or min(int(row["seq"]) for row in old_exit) >= int(starts[1]["seq"]):
                     qualification_failures.append("Replacement spawned before old-process termination was observed")
+        if args.refresh_retry:
+            stub_rows = [json.loads(line) for line in (output / "stub-events.jsonl").read_text().splitlines()]
+            failures = [row for row in stub_rows if row.get("type") == "refresh_failure_before_model"]
+            retries = [row for row in stub_rows if row.get("type") == "refresh_retry_received_user"]
+            if len(failures) != 1 or len(retries) != 1 or failures[0]["pid"] == retries[0]["pid"]:
+                qualification_failures.append("Refresh retry did not reimport the user through a new CLI after the seeded pre-model failure")
         if args.failover:
             qualification_failures.extend(failover_qualification(output, measurements, manifest))
         if args.overage:
@@ -1392,15 +1415,18 @@ def main():
     route.add_argument("--stub-cli", type=Path, help="Executable continuity-compatible Claude fixture; disposable HOME, no live credential route")
     parser.add_argument("--failover", action="store_true", help="Stub-only multi-account failover: stub rejects under the default profile and answers under account b")
     parser.add_argument("--overage", choices=("deny", "allow"), help="Stub-only usage-credit guard: stub bills the turn to overage; deny expects the guard failure, allow expects success with PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS=1")
-    parser.add_argument("--receipt-shape", choices=("synthetic-error", "error-outer-whitespace", "synthetic-read", "image-derivative", "multi-text-error"), help="Synthetic failed-bash error, large read, image derivative, or multi-text error shape (generated fixture; src/tests unchanged)")
+    parser.add_argument("--receipt-shape", choices=("synthetic-error", "error-outer-whitespace", "synthetic-read", "image-derivative", "multi-text-error", "long-error"), help="Synthetic failed-bash error, large read, image derivative, or multi-text error shape (generated fixture; src/tests unchanged)")
     parser.add_argument("--expected-cli-version", help="Exact physical CLI version required by this qualification")
     parser.add_argument("--parallel-handoff", action="store_true", help="Request two results in the same native handoff")
     parser.add_argument("--seed-receipt-mismatch", action="store_true", help="Rewrite one synthetic stdout receipt to prove transparent retirement/replay")
     parser.add_argument("--scenario", choices=("all", "abort", "steer", "transient", "receipt"), default="all", help="Independent continuity scenario; baseline-tool and warm-followup are always included")
     parser.add_argument("--transient-retry", action="store_true", help="Stub-only: synthesize one timeout then require native Pi parked retry")
+    parser.add_argument("--refresh-retry", action="store_true", help="Stub-only: synthesize pre-model refresh contention and require native Pi retry")
     args = parser.parse_args()
     if args.installed_pi_bin and not (args.stub or args.stub_cli):
         parser.error("--installed-pi-bin is restricted to stub qualification")
+    if args.refresh_retry:
+        args.transient_retry = True
     if args.live and (args.transient_retry or args.scenario == "transient"):
         parser.error("Transient injection is a deterministic fixture workload, never a fabricated live timeout")
     if args.failover and not args.stub:

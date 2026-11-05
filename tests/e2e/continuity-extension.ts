@@ -68,6 +68,12 @@ export default function (pi: ExtensionAPI) {
       // A fresh result nonce cannot be guessed from prior markers or mode names.
       // Synthetic failure payload exercises Unicode and whitespace preservation.
       const shape = process.env.CONTINUITY_RECEIPT_SHAPE;
+      if (shape === "long-error" && mode === "plain") {
+        // 15,344 chars is the measured production error, not a transport cap.
+        const text = ("ERROR_HEAD\\n" + "synthetic-error-data ".repeat(15344)).slice(0, 15334) + "ERROR_TAIL";
+        record(ctx, { type: "tool_return", mode, toolCallId, resultText: text });
+        throw new Error(text);
+      }
       const syntheticError = (shape === "synthetic-error" || shape === "error-outer-whitespace") && mode === "plain";
       const syntheticRead = shape === "synthetic-read" && mode === "plain";
       const syntheticBody = "─".repeat(112) + "é".repeat(7) + "x".repeat(483);

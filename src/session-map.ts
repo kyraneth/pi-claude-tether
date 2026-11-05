@@ -17,7 +17,13 @@
  * given pi session at a time.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  rmSync,
+  chmodSync,
+} from "node:fs";
 import { join } from "node:path";
 import { packageStateDir } from "./data-dir.js";
 import { isEphemeral } from "./env-flag.js";
@@ -166,7 +172,9 @@ export function setSystemPrompt(cliSessionId: string, prompt: string): void {
   if (isEphemeral()) return;
   try {
     mkdirSync(join(stateDir(), "sysprompt"), { recursive: true });
-    writeFileSync(systemPromptPath(cliSessionId), prompt, "utf-8");
+    const path = systemPromptPath(cliSessionId);
+    writeFileSync(path, prompt, { encoding: "utf-8", mode: 0o600 });
+    chmodSync(path, 0o600);
   } catch {
     // Best effort: an unwritable sidecar degrades to rebuilding the prompt.
   }

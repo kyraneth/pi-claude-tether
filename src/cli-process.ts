@@ -27,6 +27,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { parseLine } from "./stream-parser.js";
 import { matchesDerivativeImages, receiptImageHeader } from "./receipt-image.js";
+import { errorTruncation } from "./receipt-error.js";
 import { removeSessionMcpConfig } from "./mcp-config.js";
 import { handleControlRequest } from "./control-handler.js";
 import {
@@ -434,9 +435,11 @@ export class CliProcess implements HandoffTarget {
       const expectedContent = canonicalHandoffContent(receipt.result.content);
       const observedContent = canonicalHandoffContent(block.content);
       const sameContent = JSON.stringify(observedContent) === JSON.stringify(expectedContent);
+      const truncation = sameError && !sameContent ? errorTruncation(receipt.result, block.content) : undefined;
       if (!sameError || (!sameContent &&
           !matchesTrimmedErrorEcho(receipt.result, block.content) &&
           !matchesFlattenedErrorEcho(receipt.result, block.content) &&
+          !truncation &&
           !matchesDerivativeImages(expectedContent, observedContent))) {
         // A same-ID generic denial is not the Pi result, even for isError=true.
         const expected = receiptMetadata(receipt.result.content, !!receipt.result.isError);
@@ -450,6 +453,7 @@ export class CliProcess implements HandoffTarget {
         void this.retire(["handoff_receipt_mismatch"], { toolUseId: block.tool_use_id, kinds, expected, observed });
         return;
       }
+      if (truncation) this.ledger?.toolResultLoss(block.tool_use_id, truncation);
       this.deliveryWaiters.delete(block.tool_use_id);
       receipt.settle(true);
     }

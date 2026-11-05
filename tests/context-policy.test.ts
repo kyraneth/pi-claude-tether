@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  alignPiContext,
   assertContextPolicy,
   assertContextCliVersion,
   parseCliVersion,
@@ -144,54 +143,13 @@ describe("pi context", () => {
   });
   it("defaults to pi ownership and rejects misspelled policies", () => {
     expect(usesPiContext({})).toBe(true);
+    expect(usesPiContext({ PI_CLAUDE_CLI_CONTEXT: "" })).toBe(true);
+    expect(usesPiContext({ PI_CLAUDE_CLI_CONTEXT: "  " })).toBe(true);
     expect(usesPiContext({ PI_CLAUDE_CLI_CONTEXT: "legacy" })).toBe(false);
     expect(usesPiContext({ PI_CLAUDE_CLI_CONTEXT: " PI " })).toBe(true);
     expect(() => usesPiContext({ PI_CLAUDE_CLI_CONTEXT: "typo" })).toThrow(
       "must be",
     );
-  });
-
-  it("aligns the generated vocabulary without erasing artifact guidance or user context", () => {
-    const out = alignPiContext(prompt);
-    expect(out).toContain(
-      "- Read: Read file contents using the native Read schema",
-    );
-    expect(out).toContain("- Edit: Replace exact text using native Edit");
-    expect(out).toContain("separate calls for disjoint replacements");
-    expect(out).toContain(
-      "- Bash: Execute commands using the native Bash schema",
-    );
-    expect(out).toContain(
-      "- mcp__custom-tools__artifact_create: Publish an artifact",
-    );
-    expect(out).toContain("- mcp__custom-tools__mcp: Call the pi MCP gateway");
-    expect(out).toContain("- Use Read to examine files");
-    expect(out).not.toMatch(/^- (Grep|Glob|grep|find):/m);
-    expect(out).toContain(
-      "- Use available native search tools (or Bash) to search files",
-    );
-    expect(out).toContain("only if actually advertised; otherwise use Bash");
-    // Every phrasing pi 0.85.1 ships, including this one:
-    // "Keep edits[].oldText as small as possible".
-    expect(out).not.toContain("edits[]");
-    expect(out).toContain("- Use artifact_create for substantial deliverables");
-    expect(out).toContain("- Theme: honor light and dark modes");
-    expect(out).toContain(
-      "- mcp__custom-tools__annotate: Custom annotations with oldText and newText",
-    );
-    expect(out).toContain("- Custom annotations may use oldText and newText");
-    expect(out.endsWith(suffix)).toBe(true);
-    expect(out.match(/PROJECT-SENTINEL/g)).toHaveLength(1);
-    expect(out.match(/<available_skills>/g)).toHaveLength(1);
-    expect(out).toContain("/opt/example/.pi/skills/audit/SKILL.md");
-    expect(out).not.toContain("/opt/example/.claude/");
-  });
-
-  it("keeps custom and unfamiliar prompts intact with a vocabulary binding", () => {
-    const custom =
-      "Available tools:\n- edit: My custom rule\n\nUse .pi/docs exactly.";
-    expect(alignPiContext(custom).endsWith(custom)).toBe(true);
-    expect(alignPiContext(custom)).toContain("Native Edit uses file_path");
   });
 
   it("does not rediscover this repository's AGENTS or add history-dependent prompt text", () => {

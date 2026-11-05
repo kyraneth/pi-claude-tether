@@ -1642,6 +1642,18 @@ export function streamViaCli(
                 finishEpisode();
                 return;
               }
+              if (piOwned && !sawHandoffTool && !live.hasUnconfirmedHandoffResults &&
+                  bridge.getOutput().content.length === 0 &&
+                  [r.usage?.input_tokens, r.usage?.output_tokens, r.usage?.cache_read_input_tokens, r.usage?.cache_creation_input_tokens].every(value => value === 0) &&
+                  /^Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh\./i.test(String(errMsg))) {
+                // The CLI could not obtain credentials for this request. Retire
+                // its session; Pi alone decides whether to retry the user turn.
+                if (piSessionId) clearCliSession(piSessionId);
+                clearSystemPrompt(live.cliSessionId);
+                void discardProcess();
+                endStreamWithError(`server error: ${errMsg}`);
+                return;
+              }
               if (piOwned && isTransientApiError(String(errMsg))) {
                 applyResultUsage(r);
                 live.turnReported = ZERO_USAGE;

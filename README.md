@@ -1,6 +1,5 @@
 # pi-claude-tether
 
-
 Use your Claude subscription in [Pi](https://github.com/earendil-works/pi), through the official Claude Code CLI.
 
 Hi, I do most of my work in Pi and I have a Claude subscription. While Anthropic has not been magnanimous enough to let us use our subscription directly in third-party harnesses, it still allows its usage through [`claude -p`](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan), in its installed coding agent CLI. Pi is my main harness and I don't want to be swapping coding agents, and most importantly I don't want to juggle identities and system prompts. The goal of this tether is to unlock the high limits a subscription allows while using your own Pi custom prompt as much as possible, staying lighter on the system prompt than the less-than-optimal vendor harnesses, and not having to go through the API. I wrote it with a coding agent.
@@ -33,12 +32,12 @@ In short live tests on Sonnet 5.5, 98.3% of a warm turn's input came from the ca
 
 ## Why not something else
 
-| Option | Why I didn't use it |
-|---|---|
-| Pi with the direct API | It works well, but you pay per token instead of using your plan. |
-| Packages that reuse your Claude login and imitate Claude Code | I don't want my account depending on imitating a client. Those packages also have to keep up each time the client changes. |
-| [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge), on the Agent SDK | It's a good official route and Pi runs the tools there too. I went with the CLI because this project started as a fork of pi-claude-cli. |
-| [pi-claude-cli](https://github.com/rchern/pi-claude-cli) | This is where the project started. I forked it to add cache continuity across cancelled tools, retries and steering, several accounts, and a safe way to update the CLI. |
+| Option                                                                                 | Why I didn't use it                                                                                                                                                      |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Pi with the direct API                                                                 | It works well, but you pay per token instead of using your plan.                                                                                                         |
+| Packages that reuse your Claude login and imitate Claude Code                          | I don't want my account depending on imitating a client. Those packages also have to keep up each time the client changes.                                               |
+| [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge), on the Agent SDK | It's a good official route and Pi runs the tools there too. I went with the CLI because this project started as a fork of pi-claude-cli.                                 |
+| [pi-claude-cli](https://github.com/rchern/pi-claude-cli)                               | This is where the project started. I forked it to add cache continuity across cancelled tools, retries and steering, several accounts, and a safe way to update the CLI. |
 
 ## When not to use it
 
@@ -46,6 +45,14 @@ In short live tests on Sonnet 5.5, 98.3% of a warm turn's input came from the ca
 - You're short on memory. Each parked session keeps a Claude process in memory.
 - You expect to run into usage credits. A turn billed to credits fails, unless you set `PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS=1`.
 - You want several accounts without reading the rules. The tether supports them, but check Anthropic's terms first.
+
+## Long tools and current limits
+
+A Pi tool handoff can wait 30 minutes by default; if no continuation arrives, the tether interrupts and retires that blocked CLI process. A later continuation must reimport. This is **not** the ordinary parked-process lifetime: between completed turns the default follows the observed prompt-cache expiry. The official CLI also receives a default `MCP_TOOL_TIMEOUT` of one hour, unless already set. During an active CLI episode, five minutes without stdout triggers the tether's default inactivity timeout. These are code paths, not proof that a real tool survived each boundary. Abort and steering during tools beyond these boundaries remain unqualified.
+
+Pi's `onProviderStreamEvent` hook is currently **not called** by this tether. Claude CLI emits its own stream-json events rather than exposing the underlying HTTP stream; consumers cannot assume direct-API event visibility. The other provider hooks are separate.
+
+For restricted children, the launcher must grant a short, writable runtime directory for sockets as well as the required Claude profile and state paths. A failed runtime allocation reports the underlying error and points to `TMPDIR`, `XDG_RUNTIME_DIR` and sandbox grants; a blocked optional session sidecar instead loses resume mapping and causes reimport. The tether does not repair sandbox grants or authenticate a profile.
 
 ## More
 

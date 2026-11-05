@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { packageLedgerDir } from "./data-dir.js";
 import type { ReceiptImageHeader } from "./receipt-image.js";
+import type { ErrorTruncation } from "./receipt-error.js";
 
 // One ordered, best-effort writer. No request awaits it; no rotation or limits.
 // Disk/write failure, host process.exit() or SIGKILL can lose pending rows;
@@ -180,6 +181,9 @@ export class RequestLedger {
       retirementCauses.set(this.metadata.piSessionId, reasons);
     this.flushDetached();
     this.record("retire", { reasons, ...(handoffReceiptMismatch ? { handoffReceiptMismatch } : {}) });
+  }
+  toolResultLoss(toolUseId: string, loss: ErrorTruncation): void {
+    this.record("tool_result_vendor_truncation", { toolUseId, ...loss });
   }
   exit(code: number | null): void {
     this.flushDetached();
