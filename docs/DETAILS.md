@@ -138,3 +138,11 @@ MIT license, copyright (c) 2026 Rebecca Chernoff — see [LICENSE](../LICENSE). 
 ## How I measured
 
 The cache figures in the README come from short live tests of the packed release candidate on two machines, using Sonnet 5.5 in a real Pi session with a warm follow-up turn on one CLI process. The percentage is the input read from cache divided by all input on that turn. These tests show the cache works across a follow-up. They don't compare the tether with the direct API.
+
+## Long tools and current limits
+
+A Pi tool handoff can wait 30 minutes by default; if no continuation arrives, the tether interrupts and retires that blocked CLI process. A later continuation must reimport. This is **not** the ordinary parked-process lifetime: between completed turns the default follows the observed prompt-cache expiry. The official CLI also receives a default `MCP_TOOL_TIMEOUT` of one hour, unless already set. During an active CLI episode, five minutes without stdout triggers the tether's default inactivity timeout. These are code paths, not proof that a real tool survived each boundary. Abort and steering during tools beyond these boundaries remain unqualified.
+
+Pi's `onProviderStreamEvent` hook is currently **not called** by this tether. Claude CLI emits its own stream-json events rather than exposing the underlying HTTP stream; consumers cannot assume direct-API event visibility. The other provider hooks are separate.
+
+For restricted children, the launcher must grant a short, writable runtime directory for sockets as well as the required Claude profile and state paths. A failed runtime allocation reports the underlying error and points to `TMPDIR`, `XDG_RUNTIME_DIR` and sandbox grants; a blocked optional session sidecar instead loses resume mapping and causes reimport. The tether does not repair sandbox grants or authenticate a profile.
