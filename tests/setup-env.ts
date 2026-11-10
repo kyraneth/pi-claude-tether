@@ -15,6 +15,13 @@ import { join } from "node:path";
 
 // Diagnostics such as retire.log must not land in the developer's real state.
 process.env.XDG_STATE_HOME = mkdtempSync(join(tmpdir(), "pcc-test-state-"));
+// Nor may a developer's real data dir (private CLI install, logins) leak in.
+process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "pcc-test-data-"));
+// Nor may the account settings file land in the developer's real Pi agent
+// dir; each test gets a fresh one so stored accounts never leak across tests.
+process.env.PI_CODING_AGENT_DIR = mkdtempSync(
+  join(tmpdir(), "pcc-test-agent-"),
+);
 
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("PI_CLAUDE_TETHER_") || key.startsWith("PI_CLAUDE_CLI_")) {
@@ -26,4 +33,7 @@ for (const key of Object.keys(process.env)) {
 const sessionState = mkdtempSync(join(tmpdir(), "tether-test-sessions-"));
 beforeEach(() => {
   process.env.PI_CLAUDE_TETHER_STATE_DIR = sessionState;
+  process.env.PI_CODING_AGENT_DIR = mkdtempSync(
+    join(tmpdir(), "pcc-test-agent-"),
+  );
 });

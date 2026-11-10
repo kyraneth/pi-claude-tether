@@ -26,8 +26,28 @@ describe("removed configuration startup diagnostics", () => {
     const pi = { on: vi.fn(), registerProvider: vi.fn() };
     register(pi as any);
     register(pi as any);
-    expect(warn).toHaveBeenCalledTimes(1);
-    const message = String(warn.mock.calls[0][0]);
+    // Delivered at session_start through Pi's notification UI, once.
+    const start = pi.on.mock.calls.find(
+      (c: any[]) => c[0] === "session_start",
+    )![1];
+    const notify = vi.fn();
+    const ctx = {
+      hasUI: true,
+      ui: { notify, setStatus: vi.fn() },
+      sessionManager: { getBranch: () => [] },
+    };
+    await Promise.resolve(start({}, ctx)).catch(() => {});
+    await Promise.resolve(start({}, ctx)).catch(() => {});
+    const retired = notify.mock.calls.filter((c: any[]) =>
+      String(c[0]).includes("Ignored retired environment variables"),
+    );
+    expect(retired).toHaveLength(1);
+    expect(retired[0][1]).toBe("warning");
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("Ignored retired"),
+    );
+    const message = String(retired[0][0]);
+    expect(message).toContain("start a new one");
     expect(message).toContain("PI_CLAUDE_CLI_CONTEXT: removed");
     expect(message).toContain(
       "PI_CLAUDE_CLI_ACCOUNT: use PI_CLAUDE_TETHER_ACCOUNT",

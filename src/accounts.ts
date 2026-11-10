@@ -2,7 +2,7 @@
  * Claude account profiles: manual selection plus opt-in failover exhaustion.
  *
  * One Pi process uses exactly one account. The ordered set is declared with
- * PI_CLAUDE_TETHER_ACCOUNTS (e.g. "default,b") plus accounts.json UI entries.
+ * PI_CLAUDE_TETHER_ACCOUNTS (e.g. "default,b") plus settings-file entries.
  * Selection follows runtime/session choice, captured launch account, stored
  * default, then the existing profile. Launch example:
  * `pi-b='PI_CLAUDE_TETHER_ACCOUNT=b pi'`.
@@ -11,7 +11,9 @@
  * package data dir comes from src/data-dir.ts, which derives the directory
  * from the installed package name.
  *
- * Automatic failover between accounts is OFF unless PI_CLAUDE_TETHER_FAILOVER=1.
+ * Automatic failover between accounts is OFF unless enabled in the settings
+ * file (`failover: true`, set with /claude-accounts failover on) or, per
+ * process, by PI_CLAUDE_TETHER_FAILOVER. A recognised variable overrides it.
  * When on, a rejected subscription limit marks that account exhausted until
  * the resetsAt the CLI itself reported, and the request is retried on the
  * next non-exhausted account. The expiry comes only from CLI events; nothing
@@ -23,14 +25,21 @@
  */
 
 import {
+  constants,
+  copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
-import { packageDataDir } from "./data-dir.js";
+import { dirname, join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { packageDataDir, packageLeaf } from "./data-dir.js";
+import { addStartupNotice } from "./startup-notices.js";
 import { stateDir } from "./session-map.js";
 
 export interface AccountDeclaration {
@@ -45,6 +54,7 @@ export interface AccountDeclaration {
 export interface AccountsStore {
   accounts: AccountDeclaration[];
   default?: string;
+  failover?: boolean;
 }
 let sessionSelection: string | undefined;
 let launchSelection: { account: string } | undefined;
@@ -55,8 +65,80 @@ export function captureLaunchAccount(): string {
   return launchSelection.account;
 }
 
+/**
+ * The declaration/default/failover store, in Pi's agent directory like other
+ * extension settings (`<agent-dir>/pi-claude-tether.json`, honouring
+ * PI_CODING_AGENT_DIR). Claude login directories stay in the data directory.
+ */
 export function accountsPath(): string {
+  return join(getAgentDir(), `${packageLeaf()}.json`);
+}
+
+/** 0.12.0 kept the store at <data-dir>/accounts.json. */
+export function legacyAccountsPath(): string {
   return join(packageDataDir(), "accounts.json");
+}
+
+/**
+ * Move a 0.12.0 store to the agent directory once. The old path is never read
+ * as configuration; if both exist, the new one wins and the old one is named.
+ */
+export function migrateAccountsStore(): void {
+  const from = legacyAccountsPath();
+  const to = accountsPath();
+  if (!existsSync(from)) return;
+  mkdirSync(dirname(to), { recursive: true });
+  const published = publishNoClobber(from, to);
+  if (published === "unsupported") {
+    addStartupNotice(
+      `Could not move ${from} to ${to} automatically: this filesystem has no hard links, needed to move it without risking a newer file. Move it yourself; until then the old file is not read.`,
+    );
+    return;
+  }
+  if (!published) {
+    addStartupNotice(
+      `Ignoring old ${from}; account settings now live in ${to}. Delete the old file once you have checked it.`,
+    );
+    return;
+  }
+  unlinkSync(from);
+  addStartupNotice(`Moved Claude account settings from ${from} to ${to}.`);
+}
+
+/**
+ * Publish `from` at `to` only if `to` does not exist, atomically: a hard link
+ * fails with EEXIST instead of replacing a file another Pi process wrote, and
+ * readers never see a partly written file. Across filesystems the copy is
+ * staged next to `to` and linked from there. Returns false when `to` already
+ * exists and "unsupported" when the filesystem has no hard links; the source
+ * is never removed here.
+ */
+export function publishNoClobber(
+  from: string,
+  to: string,
+  link: (source: string, target: string) => void = linkSync,
+): boolean | "unsupported" {
+  const linkOnce = (source: string): boolean | "unsupported" => {
+    try {
+      link(source, to);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") return false;
+      if (code === "EXDEV" || code === "EPERM" || code === "ENOTSUP")
+        return "unsupported";
+      throw error;
+    }
+  };
+  const direct = linkOnce(from);
+  if (direct !== "unsupported") return direct;
+  const staged = `${to}.${process.pid}.migrate`;
+  copyFileSync(from, staged, constants.COPYFILE_EXCL);
+  try {
+    return linkOnce(staged);
+  } finally {
+    rmSync(staged, { force: true });
+  }
 }
 
 /** Only our declaration file, never the CLI's credential store. */
@@ -94,6 +176,8 @@ export function readAccounts(): AccountsStore {
       throw new Error("Invalid accounts.json default");
     checkName(parsed.default, "accounts.json default", parsed.default);
   }
+  if (parsed.failover !== undefined && typeof parsed.failover !== "boolean")
+    throw new Error("Invalid accounts.json failover: expected true or false");
   return parsed;
 }
 
@@ -107,7 +191,7 @@ export function accountsForUpdate(): AccountsStore {
 
 /** Atomic declaration update; no credential or cached authentication state. */
 export function writeAccounts(store: AccountsStore): void {
-  mkdirSync(packageDataDir(), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(accountsPath()), { recursive: true });
   const tmp = `${accountsPath()}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(store, null, 2) + "\n", { mode: 0o600 });
   renameSync(tmp, accountsPath());
@@ -239,13 +323,40 @@ export function isSingleDefaultAccountSet(set: string[]): boolean {
   return set.length === 1 && set[0] === DEFAULT_ACCOUNT;
 }
 
+// Pi's own boolean environment vocabulary (PI_TELEMETRY).
+const ENV_ON = new Set(["1", "true", "yes"]);
+const ENV_OFF = new Set(["0", "false", "no"]);
+let warnedFailoverValue = false;
+
 /**
- * Whether a rejected subscription limit may replay on another account.
+ * Whether a rejected subscription limit may replay on another account, and
+ * which setting decided it.
  *
- * Only the exact value "1" enables failover; other values leave it disabled.
+ * PI_CLAUDE_TETHER_FAILOVER decides for this process when it is 1/true/yes or
+ * 0/false/no; any other non-empty value is ignored with a notice. Otherwise
+ * the settings file's `failover: true` enables. The file is read on each call, so a change made
+ * with /claude-accounts applies from the next turn without restarting Pi.
  */
+export function failoverSetting(env: NodeJS.ProcessEnv = process.env): {
+  enabled: boolean;
+  source: "environment" | "accounts" | "default";
+} {
+  const value = (env.PI_CLAUDE_TETHER_FAILOVER ?? "").trim().toLowerCase();
+  if (ENV_ON.has(value)) return { enabled: true, source: "environment" };
+  if (ENV_OFF.has(value)) return { enabled: false, source: "environment" };
+  if (value !== "" && !warnedFailoverValue) {
+    warnedFailoverValue = true;
+    addStartupNotice(
+      "Ignoring PI_CLAUDE_TETHER_FAILOVER: expected 1, true, yes, 0, false or no. Using /claude-accounts failover instead.",
+    );
+  }
+  if (readAccounts().failover === true)
+    return { enabled: true, source: "accounts" };
+  return { enabled: false, source: "default" };
+}
+
 export function failoverEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (env.PI_CLAUDE_TETHER_FAILOVER ?? "") === "1";
+  return failoverSetting(env).enabled;
 }
 
 /** The CLAUDE_CONFIG_DIR a spawn or probe for this account must use. */
@@ -350,9 +461,12 @@ export function selectFailoverAccount(
  * call — then the first fresh account in set order, so a later spawn
  * before resetsAt stays on the account that answered.
  */
-export function pickInitialAccount(set: string[]): string {
+export function pickInitialAccount(
+  set: string[],
+  failover: boolean = failoverEnabled(),
+): string {
   const pinned = selectedAccountName(set);
-  if (!failoverEnabled()) return pinned;
+  if (!failover) return pinned;
   if (!isAccountExhausted(pinned)) return pinned;
   return selectFailoverAccount(set, pinned) ?? pinned;
 }

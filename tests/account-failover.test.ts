@@ -979,3 +979,27 @@ describe("rate-limit header forwarding", () => {
     expect(observed!.headers).toEqual({});
   });
 });
+
+it("a settings file corrupted mid-turn cannot break the CLI error path", async () => {
+  const { writeAccounts, accountsPath } = await import("../src/accounts");
+  writeAccounts({
+    accounts: [{ name: "default" }, { name: "b" }],
+    failover: false,
+  });
+  vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "");
+  streamViaCli(
+    model,
+    {
+      systemPrompt: "test",
+      messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
+    } as any,
+    {},
+  );
+  await vi.advanceTimersByTimeAsync(0);
+  const proc = childProcs()[0];
+  expect(proc).toBeTruthy();
+  await initProc(proc);
+  writeFileSync(accountsPath(), "{");
+  await writeLine(proc, resultError("upstream failure"));
+  expect(streamEvents().some((e: any) => e.type === "error")).toBe(true);
+});

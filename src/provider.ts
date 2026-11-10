@@ -413,9 +413,13 @@ export function streamViaCli(
   // configuration error fails the turn loudly instead of guessing a profile.
   let accountSet: string[];
   let attemptAccount: string;
+  // Resolved once per turn inside this guard: a settings file edited or
+  // corrupted mid-turn cannot throw from the CLI's output callbacks.
+  let failover: boolean;
   try {
     accountSet = parseAccountSet();
-    attemptAccount = pickInitialAccount(accountSet);
+    failover = failoverEnabled();
+    attemptAccount = pickInitialAccount(accountSet, failover);
   } catch (err: unknown) {
     failPiRequest(err instanceof Error ? err.message : String(err));
     return stream;
@@ -1433,7 +1437,7 @@ export function streamViaCli(
                   ? r.errors.join("; ")
                   : `Claude CLI returned ${r.subtype ?? "non-success result"}`);
               if (
-                failoverEnabled() &&
+                failover &&
                 multiAccount &&
                 rejectedResetsAt !== undefined &&
                 mode !== "handoff" &&

@@ -28,6 +28,8 @@ The tether reads that folder by default, so this login stays separate from any C
 
 The tether runs the official Claude Code CLI and keeps one process alive per session and account, so follow-up turns and tool calls stay on the same process. Pi's system prompt replaces the Claude Code one, every tool runs in Pi, and Pi owns the history. Your login stays in the CLI, and the tether never reads it.
 
+For several Claude accounts, use `/claude-accounts` inside Pi to add, switch and turn on failover. It saves everything in `~/.pi/agent/pi-claude-tether.json`, so no shell setup is needed. [Where settings live](docs/DETAILS.md#where-settings-live) explains the optional environment variables.
+
 In short live tests on Sonnet 5.5, 98.3% of a warm turn's input came from the cache on one machine and 99.1% on another. I haven't published a comparison with the direct API yet.
 
 ## Why not something else

@@ -37,6 +37,7 @@ import {
   readFileSync,
   statSync,
   writeFileSync,
+  rmSync,
 } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { packageCliBinDir, packageDataDir } from "../src/data-dir";
@@ -104,6 +105,7 @@ describe("spawnClaude", () => {
       );
       expect(process.env.PATH).toBe("/legacy/bin");
     } finally {
+      rmSync(join(privateBin, "claude"), { force: true });
       vi.unstubAllEnvs();
     }
   });

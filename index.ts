@@ -24,7 +24,10 @@ import {
   writeAccounts,
   captureLaunchAccount,
   isAccountPending,
+  migrateAccountsStore,
+  failoverSetting,
 } from "./src/accounts.js";
+import { addStartupNotice, takeStartupNotices } from "./src/startup-notices.js";
 import {
   ACCOUNT_ENTRY_TYPE,
   accountsReport,
@@ -180,8 +183,33 @@ async function ensureHandoffSocket(): Promise<string | undefined> {
   return handoffSocket;
 }
 
+/** Deliver load-time configuration notices where the user can see them. */
+function flushStartupNotices(ctx: unknown): void {
+  const c = ctx as
+    | { hasUI?: boolean; ui?: { notify?: (m: string, l: string) => void } }
+    | undefined;
+  for (const message of takeStartupNotices()) {
+    if (c?.hasUI && c.ui?.notify)
+      c.ui.notify(`pi-claude-tether: ${message}`, "warning");
+    else console.warn(`[pi-claude-tether] ${message}`);
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   warnRemovedEnvironment();
+  try {
+    migrateAccountsStore();
+    failoverSetting(); // validates the variable once, raising a notice if unrecognised
+  } catch (error) {
+    addStartupNotice(
+      `Claude account settings unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  // Registered before provider setup so notices still arrive when it fails
+  // (for example, a missing CLI).
+  pi.on("session_start", (_event: unknown, ctx: unknown) =>
+    flushStartupNotices(ctx),
+  );
   guardRemovedSessionProvider(pi);
   try {
     // Startup validation
@@ -325,7 +353,7 @@ export default function (pi: ExtensionAPI) {
 
     pi.registerCommand("claude-accounts", {
       description:
-        "Manage official CLI accounts: list, add, login, status, switch, remove, doctor",
+        "Manage official CLI accounts: list, add, login, status, switch, remove, failover, doctor",
       getArgumentCompletions: (prefix: string) => {
         const options = [
           "list",
@@ -333,6 +361,8 @@ export default function (pi: ExtensionAPI) {
           "login --all",
           "status",
           "doctor",
+          "failover on",
+          "failover off",
           ...parseAccountSet()
             .filter((name) => !isAccountPending(name))
             .map((name) => `switch ${name}`),
@@ -344,6 +374,7 @@ export default function (pi: ExtensionAPI) {
       },
       handler: async (args, ctx) => {
         const parsed = parseAccountArgs(args);
+        flushStartupNotices(ctx);
         try {
           if (parsed.action === "switch") {
             const account = selectAccount(parsed.account);

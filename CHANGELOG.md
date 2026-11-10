@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.1 — 2026-11-10
+
+- Failover no longer needs a shell variable: `/claude-accounts failover on|off` stores it in the settings file and applies from the next turn. `PI_CLAUDE_TETHER_FAILOVER` remains an optional per-process override and now accepts Pi's boolean words (`1`/`true`/`yes`, `0`/`false`/`no`); any other value is ignored with a notice instead of silently turning failover off. `/claude-accounts` shows which setting decided.
+- The account settings file moves to Pi's agent directory, `~/.pi/agent/pi-claude-tether.json` (following `PI_CODING_AGENT_DIR`), like other Pi extensions' settings. An existing 0.12.0 `~/.local/share/pi-claude-tether/accounts.json` is moved once with a notice; logins stay where they are.
+- Configuration notices (retired `PI_CLAUDE_CLI_*` variables, an unrecognised value, the moved file) now appear as Pi notifications when a session starts, also when provider setup fails. Previously they went to the console, which Pi's interactive screen does not show.
+- New "Where settings live" documentation, including why a shell or tmux session opened before editing shell files keeps old values.
+- Tests no longer read or write the developer's real Pi agent or data directories.
+
+Upgrading from 0.12.0: nothing is required. To drop the shell variables, run `/claude-accounts failover on` once (this also records env-declared accounts in the settings file), then remove the `PI_CLAUDE_TETHER_ACCOUNTS`/`PI_CLAUDE_TETHER_FAILOVER` exports and start Pi from a new shell.
+
 ## 0.12.0 — 2026-11-10
 
 - New Claude models without waiting for a Pi release: models Claude Code's own catalog offers (for example Fable 5.2 on launch day) are added to `/model` next to Pi's built-in list, and a running Pi picks them up after the turn that refreshed the catalog.
@@ -25,7 +35,7 @@ export PI_CLAUDE_TETHER_ACCOUNTS="${PI_CLAUDE_TETHER_ACCOUNTS:-default,b}"
 export PI_CLAUDE_TETHER_FAILOVER="${PI_CLAUDE_TETHER_FAILOVER:-1}"
 ```
 
-Remove their old `PI_CLAUDE_CLI_ACCOUNTS` / `PI_CLAUDE_CLI_FAILOVER` definitions and unset old variables in existing shells (or start a new shell). For any optional exports, replace the `PI_CLAUDE_CLI_` prefix with `PI_CLAUDE_TETHER_` for these supported suffixes: `ACCOUNT`, `ACCOUNTS`, `FAILOVER`, `ALLOW_USAGE_CREDITS`, `HANDOFF_PROXY`, `HANDOFF_WAIT_MS`, `KEEPALIVE_MS`, `SETTINGS`, `STATE_DIR`, `STRICT_VERSION`, `THINKING_DISPLAY`, `TIMEOUT_MS`. No old variable is read as configuration. Remove the old `CONTEXT` switch instead of renaming it; there is no legacy mode to select. Remove the legacy-only `PI_CLAUDE_CLI_SYSTEM_PROMPT`, `PI_CLAUDE_CLI_AUTOCOMPACT`, `PI_CLAUDE_CLI_HERMETIC`, `PI_CLAUDE_CLI_STRICT_MCP`, `PI_CLAUDE_CLI_EPHEMERAL`, `PI_CLAUDE_CLI_TOOL_RESULTS`, `PI_CLAUDE_CLI_NO_AGENT_WAIT` and `PI_CLAUDE_CLI_AGENT_WAIT_MS` exports; their renamed spellings are not supported either. Pi always supplies isolation, owns compaction and executes tools.
+Remove their old `PI_CLAUDE_CLI_ACCOUNTS` / `PI_CLAUDE_CLI_FAILOVER` definitions and start Pi from a new shell: an already open shell, or a tmux session's saved environment, keeps the old values. (0.12.1 makes these exports optional; see above.) For any optional exports, replace the `PI_CLAUDE_CLI_` prefix with `PI_CLAUDE_TETHER_` for these supported suffixes: `ACCOUNT`, `ACCOUNTS`, `FAILOVER`, `ALLOW_USAGE_CREDITS`, `HANDOFF_PROXY`, `HANDOFF_WAIT_MS`, `KEEPALIVE_MS`, `SETTINGS`, `STATE_DIR`, `STRICT_VERSION`, `THINKING_DISPLAY`, `TIMEOUT_MS`. No old variable is read as configuration. Remove the old `CONTEXT` switch instead of renaming it; there is no legacy mode to select. Remove the legacy-only `PI_CLAUDE_CLI_SYSTEM_PROMPT`, `PI_CLAUDE_CLI_AUTOCOMPACT`, `PI_CLAUDE_CLI_HERMETIC`, `PI_CLAUDE_CLI_STRICT_MCP`, `PI_CLAUDE_CLI_EPHEMERAL`, `PI_CLAUDE_CLI_TOOL_RESULTS`, `PI_CLAUDE_CLI_NO_AGENT_WAIT` and `PI_CLAUDE_CLI_AGENT_WAIT_MS` exports; their renamed spellings are not supported either. Pi always supplies isolation, owns compaction and executes tools.
 
 A corrupt `session-map.json` in the state directory now fails closed instead of being ignored, and blocks every Claude turn, including in new sessions, until it is repaired or removed. The error names the state directory; starting a fresh Pi session alone does not clear it.
 

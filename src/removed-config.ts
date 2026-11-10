@@ -2,6 +2,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { addStartupNotice } from "./startup-notices.js";
 
 /** Diagnostics only: retired variables never configure the provider. */
 const ACTIVE_SUFFIXES = new Set([
@@ -41,8 +42,8 @@ export function warnRemovedEnvironment(
     .sort();
   if (names.length === 0) return;
   warned = true;
-  console.warn(
-    `[pi-claude-tether] Ignored retired environment variables: ${names
+  addStartupNotice(
+    `Ignored retired environment variables: ${names
       .map((name) => {
         const suffix = name.slice("PI_CLAUDE_CLI_".length);
         if (REMOVED_SUFFIXES.has(suffix))
@@ -51,7 +52,9 @@ export function warnRemovedEnvironment(
           ? `${name}: use PI_CLAUDE_TETHER_${suffix} instead`
           : `${name}: retired; consult the migration guide (no supported replacement known)`;
       })
-      .join("; ")}. No old-name aliases are supported.`,
+      .join(
+        "; ",
+      )}. No old-name aliases are supported. A shell or tmux session started before you edited your shell files still carries old values: start a new one.`,
   );
 }
 

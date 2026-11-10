@@ -12,6 +12,8 @@ import {
   writeAccounts,
   isAccountPending,
   accountsForUpdate,
+  failoverSetting,
+  accountsPath,
 } from "./accounts.js";
 import {
   cliAuthStatus,
@@ -28,7 +30,7 @@ import { accountAuth, type AccountUI } from "./account-login.js";
 
 export const ACCOUNT_ENTRY_TYPE = "pi-claude-tether.account";
 export const ACCOUNT_USAGE =
-  "Usage: /claude-accounts [list|ls] | add <name> [--email e] [--sso] [--console] | login <name>|--all | status [name] | switch <name> [--session|--default] | remove <name> [--revoke] [--purge] [--force] | doctor";
+  "Usage: /claude-accounts [list|ls] | add <name> [--email e] [--sso] [--console] | login <name>|--all | status [name] | switch <name> [--session|--default] | remove <name> [--revoke] [--purge] [--force] | failover [on|off] | doctor";
 
 export function sessionAccount(
   branch: ReadonlyArray<{ type?: string; customType?: string; data?: unknown }>,
@@ -105,7 +107,7 @@ export async function accountsReport(
   const resets = new Map(
     accountResetTimes(set).map((r) => [r.account, r.resetsAt]),
   );
-  const lines = ["Claude accounts (* = this session):"];
+  const lines = ["Claude accounts (* = this session):", failoverLine()];
   if (selectionError) lines.push(`Selection unavailable: ${selectionError}`);
   if (!set.length)
     lines.push("No accounts declared. Use /claude-accounts add <name>.");
@@ -161,8 +163,19 @@ export async function accountsReport(
   return lines.join("\n");
 }
 
+/** Failover state and the setting that decided it. */
+export function failoverLine(): string {
+  const { enabled, source } = failoverSetting();
+  const file = readAccounts().failover;
+  if (source === "environment")
+    return `Failover: ${enabled ? "on" : "off"} (set by PI_CLAUDE_TETHER_FAILOVER in this Pi's environment${file === undefined ? "" : `, overriding the settings file's ${file ? "on" : "off"}`}; unset it and start Pi from a new shell to use /claude-accounts failover)`;
+  if (source === "accounts") return `Failover: on (${accountsPath()})`;
+  return "Failover: off (enable with /claude-accounts failover on)";
+}
+
 type Parsed =
   | { action: "list" | "doctor" | "usage" }
+  | { action: "failover"; enabled?: boolean }
   | { action: "status"; account?: string }
   | { action: "switch"; account: string; persistent?: true }
   | {
@@ -186,6 +199,12 @@ export function parseAccountArgs(args: string): Parsed {
   const action = words.shift() ?? "list";
   if (["list", "ls", "doctor"].includes(action) && !words.length)
     return { action: action === "doctor" ? "doctor" : "list" };
+  if (action === "failover" && words.length <= 1) {
+    if (!words.length) return { action };
+    if (words[0] === "on" || words[0] === "off")
+      return { action, enabled: words[0] === "on" };
+    return { action: "usage" };
+  }
   if (action === "status" && words.length <= 1 && !words[0]?.startsWith("--"))
     return { action, ...(words[0] ? { account: words[0] } : {}) };
   const account = words.shift();
@@ -253,6 +272,20 @@ export async function manageAccount(
       ),
       "info",
     );
+    return;
+  }
+  if (parsed.action === "failover") {
+    if (parsed.enabled !== undefined) {
+      const store = accountsForUpdate();
+      // Record every currently declared account (including env-declared
+      // ones) so dropping the shell exports afterwards loses nothing.
+      for (const name of parseAccountSet())
+        if (!store.accounts.some((a) => a.name === name))
+          store.accounts.push({ name });
+      store.failover = parsed.enabled;
+      writeAccounts(store);
+    }
+    ui.notify(failoverLine(), "info");
     return;
   }
   if (parsed.action === "login" && "all" in parsed) {

@@ -15,7 +15,11 @@ import {
   selectFailoverAccount,
   pickInitialAccount,
   accountResetTimes,
+  failoverSetting,
+  writeAccounts,
+  accountsPath,
 } from "../src/accounts";
+import { takeStartupNotices } from "../src/startup-notices";
 
 const FUTURE_RESETSAT = 1893456000; // 2030-01-01T00:00:00Z, fixed test data
 
@@ -93,11 +97,55 @@ describe("failoverEnabled", () => {
     expect(failoverEnabled()).toBe(true);
   });
 
-  it("rejects broader truthy spellings", () => {
-    for (const value of ["true", "yes", "TRUE", "on", " 1", "1 "]) {
+  it("accepts Pi's boolean vocabulary in the environment", () => {
+    for (const value of ["1", "true", "yes", "TRUE", " Yes "]) {
       vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", value);
-      expect(failoverEnabled()).toBe(false);
+      expect(failoverSetting()).toEqual({
+        enabled: true,
+        source: "environment",
+      });
     }
+    for (const value of ["0", "false", "no", "NO"]) {
+      vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", value);
+      expect(failoverSetting()).toEqual({
+        enabled: false,
+        source: "environment",
+      });
+    }
+  });
+
+  it("is enabled by the settings file without any environment variable", () => {
+    writeAccounts({ accounts: [], failover: true });
+    expect(failoverSetting()).toEqual({ enabled: true, source: "accounts" });
+    writeAccounts({ accounts: [], failover: false });
+    expect(failoverSetting()).toEqual({ enabled: false, source: "default" });
+  });
+
+  it("lets a recognised environment value override the file both ways", () => {
+    writeAccounts({ accounts: [], failover: true });
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "0");
+    expect(failoverEnabled()).toBe(false);
+    writeAccounts({ accounts: [], failover: false });
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
+    expect(failoverEnabled()).toBe(true);
+  });
+
+  it("ignores an unrecognised value with a notice, so it cannot silently disable the file", () => {
+    takeStartupNotices();
+    writeAccounts({ accounts: [], failover: true });
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "on");
+    expect(failoverSetting()).toEqual({ enabled: true, source: "accounts" });
+    expect(takeStartupNotices().join("\n")).toMatch(
+      /Ignoring PI_CLAUDE_TETHER_FAILOVER/,
+    );
+  });
+
+  it("rejects a non-boolean failover in the settings file", () => {
+    writeFileSync(
+      accountsPath(),
+      JSON.stringify({ accounts: [], failover: "yes" }),
+    );
+    expect(() => failoverSetting()).toThrow(/Invalid accounts.json failover/);
   });
 });
 

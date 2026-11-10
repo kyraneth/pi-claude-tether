@@ -1,6 +1,6 @@
 {
   "name": "pi-claude-tether",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Use your Claude subscription in Pi through the official Claude Code CLI",
   "main": "index.ts",
   "keywords": [
