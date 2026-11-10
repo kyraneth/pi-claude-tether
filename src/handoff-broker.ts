@@ -2,17 +2,7 @@ import { acceptInvocation } from "pi-tether-core/socket-transport";
 /**
  * Handoff broker: the pi side of proxied custom-tool calls.
  *
- * Observer mode used to end the CLI turn the moment the model called a custom
- * pi tool: deny the permission, send `interrupt`, let the CLI exit, run the
- * tool in pi, then `--resume` a NEW process with the result pasted in as user
- * text. Every one of those restarts rebuilt the CLI's system prompt — and
- * Claude Code snapshots `git status`, recent commits and the branch into it,
- * so a commit or a branch rename between two processes re-billed the entire
- * context as cache WRITE. The restart also left
- * "tool use was rejected" / "[Request interrupted]" / "No response requested."
- * filler in the CLI transcript on every custom tool call.
- *
- * Now the permission is ALLOWED and the CLI calls `tools/call` on the
+ * Pi permits the handoff and the CLI calls `tools/call` on the
  * schema-only MCP server (`mcp-schema-server.cjs`), which forwards the call
  * here over a local socket and blocks until pi has executed the tool. The CLI
  * process never exits mid-turn, its cached prefix stays intact, and its

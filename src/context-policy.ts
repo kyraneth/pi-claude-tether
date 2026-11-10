@@ -1,6 +1,5 @@
-/** Configurable context has one loader; execution remains Claude-native. */
+/** Pi-owned context requires Claude's tested instruction-isolation controls. */
 
-export const PI_CONTEXT_MARKER = '<pi_context_policy version="1">';
 export class ContextPolicyError extends Error {}
 export const MIN_CONTEXT_CLI_VERSION = "2.1.263";
 /**
@@ -8,15 +7,15 @@ export const MIN_CONTEXT_CLI_VERSION = "2.1.263";
  *
  * Together with MIN_CONTEXT_CLI_VERSION this is the declared TESTED range.
  * A newer CLI is not refused by default: it warns once per process and
- * continues (PI_CLAUDE_CLI_STRICT_VERSION=1 refuses instead). Raised only
+ * continues (PI_CLAUDE_TETHER_STRICT_VERSION=1 refuses instead). Raised only
  * when the full suite plus the stub e2es pass against the newer version
  * (see README "Claude Code CLI version policy").
  *
- * The declared ceiling is 2.1.311. Qualification includes installation,
+ * The declared ceiling is 2.1.321 (the first CLI offering Fable 5.2). Qualification includes installation,
  * version probing, a logged-out spawn-flags smoke, the full test suite,
  * and the stub continuity and failover e2es described in README.
  */
-export const TESTED_CLI_MAX = "2.1.311";
+export const TESTED_CLI_MAX = "2.1.321";
 
 /** Parse "2.1.283 (Claude Code)" to "2.1.283". Undefined when unparseable. */
 export function parseCliVersion(output: string): string | undefined {
@@ -39,7 +38,7 @@ export function compareCliVersions(a: string, b: string): number {
 export function strictCliVersion(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  return (env.PI_CLAUDE_CLI_STRICT_VERSION ?? "") === "1";
+  return (env.PI_CLAUDE_TETHER_STRICT_VERSION ?? "") === "1";
 }
 
 /** True when the version is above the tested range (not yet qualified). */
@@ -56,27 +55,6 @@ export function assertContextCliVersion(output: string): void {
   ) {
     throw new ContextPolicyError(
       `Pi context requires Claude Code ${MIN_CONTEXT_CLI_VERSION}+ (the tested isolation controls). Update Claude Code before using this policy.`,
-    );
-  }
-}
-
-export function usesPiContext(env: NodeJS.ProcessEnv = process.env): boolean {
-  const value = (env.PI_CLAUDE_CLI_CONTEXT ?? "pi").trim().toLowerCase();
-  if (!value || value === "pi") return true;
-  if (value === "legacy") return false;
-  throw new ContextPolicyError(
-    "PI_CLAUDE_CLI_CONTEXT must be 'pi' or 'legacy'.",
-  );
-}
-
-/** A policy change cannot safely reuse the CLI's hidden history/pinned prompt. */
-export function assertContextPolicy(
-  storedPrompt: string | undefined,
-  piContext: boolean,
-): void {
-  if ((storedPrompt?.startsWith(PI_CONTEXT_MARKER) ?? false) !== piContext) {
-    throw new ContextPolicyError(
-      "Claude context policy changed (or its saved prompt is missing). Start a fresh pi session; the existing Claude transcript was not migrated.",
     );
   }
 }

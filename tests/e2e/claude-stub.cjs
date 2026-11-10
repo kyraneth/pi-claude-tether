@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Deterministic Claude Code CLI stub for pi-claude-cli e2e tests.
+ * Deterministic Claude Code CLI stub for pi-claude-tether e2e tests.
  * Speaks just enough of the stream-json NDJSON protocol:
  *   claude --version            -> version string
  *   claude auth status          -> JSON auth blob
@@ -177,33 +177,77 @@ let steerAnswered = false;
 let steerInterrupted = false;
 const steerTrace = (kind, extra = {}) => {
   if (process.env.CLAUDE_STUB_STEER_TRACE)
-    require("node:fs").appendFileSync(process.env.CLAUDE_STUB_STEER_TRACE,
-      JSON.stringify({ kind, pid: process.pid, ...extra }) + "\n");
+    require("node:fs").appendFileSync(
+      process.env.CLAUDE_STUB_STEER_TRACE,
+      JSON.stringify({ kind, pid: process.pid, ...extra }) + "\n",
+    );
 };
 const answerSteer = () => {
   if (!handoffAnswered || !steerMessage || steerAnswered) return;
   steerAnswered = true;
   cycle("STEER-OK");
-  emit({ type: "result", subtype: "success", is_error: false, num_turns: 2,
-    usage: { input_tokens: 10, output_tokens: 6 } });
+  emit({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    num_turns: 2,
+    usage: { input_tokens: 10, output_tokens: 6 },
+  });
 };
 const startSteer = () => {
   steerMode = true;
   responded = true;
   const fs = require("node:fs");
-  const config = JSON.parse(fs.readFileSync(args[args.indexOf("--mcp-config") + 1], "utf8"));
-  const [, , socketPath, session, secretPath] = config.mcpServers["custom-tools"].args;
+  const config = JSON.parse(
+    fs.readFileSync(args[args.indexOf("--mcp-config") + 1], "utf8"),
+  );
+  const [, , socketPath, session, secretPath] =
+    config.mcpServers["custom-tools"].args;
   steerTrace("spawn", { session });
   emit({ type: "system", subtype: "init", session_id: session });
-  emit({ type: "stream_event", event: { type: "message_start", message: { usage: { input_tokens: 5 } } } });
-  emit({ type: "stream_event", event: { type: "content_block_start", index: 0,
-    content_block: { type: "tool_use", id: "fixture-call", name: "mcp__custom-tools__fixture_steer_tool", input: {} } } });
-  emit({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
-  emit({ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 3 } } });
+  emit({
+    type: "stream_event",
+    event: { type: "message_start", message: { usage: { input_tokens: 5 } } },
+  });
+  emit({
+    type: "stream_event",
+    event: {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "tool_use",
+        id: "fixture-call",
+        name: "mcp__custom-tools__fixture_steer_tool",
+        input: {},
+      },
+    },
+  });
+  emit({
+    type: "stream_event",
+    event: { type: "content_block_stop", index: 0 },
+  });
+  emit({
+    type: "stream_event",
+    event: {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use" },
+      usage: { output_tokens: 3 },
+    },
+  });
   emit({ type: "stream_event", event: { type: "message_stop" } });
   const socket = require("node:net").createConnection(socketPath);
-  socket.on("connect", () => socket.write(JSON.stringify({ type: "call", session,
-    toolUseId: "fixture-call", name: "fixture_steer_tool", arguments: {}, secret: fs.readFileSync(secretPath, "utf8") }) + "\n"));
+  socket.on("connect", () =>
+    socket.write(
+      JSON.stringify({
+        type: "call",
+        session,
+        toolUseId: "fixture-call",
+        name: "fixture_steer_tool",
+        arguments: {},
+        secret: fs.readFileSync(secretPath, "utf8"),
+      }) + "\n",
+    ),
+  );
   let reply = "";
   socket.on("data", (chunk) => {
     reply += chunk;
@@ -212,8 +256,20 @@ const startSteer = () => {
     if (result.isError || result.content?.[0]?.text !== "FIXTURE-TOOL-RESULT")
       throw new Error("steer stub received the wrong handoff result");
     handoffAnswered = true;
-    emit({ type: "user", message: { role: "user", content: [{ type: "tool_result",
-      tool_use_id: "fixture-call", content: result.content }] }, parent_tool_use_id: null });
+    emit({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "fixture-call",
+            content: result.content,
+          },
+        ],
+      },
+      parent_tool_use_id: null,
+    });
     steerTrace("tool_result");
     answerSteer();
   });
@@ -236,7 +292,12 @@ process.stdin.on("data", (chunk) => {
     if (msg.type === "control_request") {
       if (steerMode && msg.request?.subtype === "interrupt") {
         steerInterrupted = true;
-        emit({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1 });
+        emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          num_turns: 1,
+        });
       }
       emit({
         type: "control_response",
@@ -248,18 +309,26 @@ process.stdin.on("data", (chunk) => {
     if (line.includes("FIXTURE-START")) startSteer();
     else if (steerMode) {
       if (line.includes("FIXTURE-STEER")) {
-        if (!steerInterrupted) throw new Error("steer arrived inside the active tool turn");
-        if (!msg.uuid || steerMessage) throw new Error("missing or duplicate steer UUID");
+        if (!steerInterrupted)
+          throw new Error("steer arrived inside the active tool turn");
+        if (!msg.uuid || steerMessage)
+          throw new Error("missing or duplicate steer UUID");
         emit({ ...msg, isReplay: true });
         steerMessage = msg;
         steerTrace("steer");
         answerSteer();
       } else if (line.includes("FIXTURE-FOLLOWUP")) {
-        if (!steerAnswered) throw new Error("follow-up arrived before the steer answer");
+        if (!steerAnswered)
+          throw new Error("follow-up arrived before the steer answer");
         steerTrace("followup");
         cycle("FOLLOWUP-OK");
-        emit({ type: "result", subtype: "success", is_error: false, num_turns: 1,
-          usage: { input_tokens: 5, output_tokens: 3 } });
+        emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          num_turns: 1,
+          usage: { input_tokens: 5, output_tokens: 3 },
+        });
       } else throw new Error("unexpected input/replay in steer stub");
     } else if (line.includes("fanout")) respondFanout();
     else respond();

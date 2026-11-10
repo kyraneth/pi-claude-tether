@@ -62,6 +62,7 @@ export function isPublicPackageName(name: string | undefined): boolean {
 export function packageLeaf(
   name: string | undefined = ownPackageName(),
 ): PackageLeaf {
+  // Historical unknown-package storage only, not a provider or env alias.
   return isPublicPackageName(name) ? "pi-claude-tether" : "pi-claude-cli";
 }
 
@@ -69,8 +70,8 @@ export function packageLeaf(
  * The package's data directory: Claude profile, account profiles, CLI install.
  *
  * Public: `${XDG_DATA_HOME:-~/.local/share}/pi-claude-tether`.
- * Generic legacy (and any unknown name):
- * `~/.local/share/pi-claude-cli`.
+ * Generic historical storage (any unknown package name):
+ * `~/.local/share/pi-claude-cli`. Never move existing credentials implicitly.
  */
 export function packageDataDir(
   name: string | undefined = ownPackageName(),
@@ -92,13 +93,13 @@ export function packageCliBinDir(
 
 /**
  * The package's Pi agent state directory (session map, exhaustion records,
- * stored system prompts). `PI_CLAUDE_CLI_STATE_DIR` still overrides, as before.
+ * stored system prompts). `PI_CLAUDE_TETHER_STATE_DIR` still overrides, as before.
  */
 export function packageStateDir(
   name: string | undefined = ownPackageName(),
 ): string {
   return (
-    process.env.PI_CLAUDE_CLI_STATE_DIR ||
+    process.env.PI_CLAUDE_TETHER_STATE_DIR ||
     join(homedir(), ".pi", "agent", packageLeaf(name))
   );
 }

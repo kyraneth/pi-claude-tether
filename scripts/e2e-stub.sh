@@ -82,8 +82,8 @@ fi
 run_pi() {
   # `</dev/null` because print mode still reads stdin: inherit a pipe that
   # never closes (a CI runner, an agent shell) and pi waits on EOF forever.
-  cd "$WORK_DIR" && HOME="$TEST_HOME" PI_CLAUDE_CLI_KEEPALIVE_MS=0 PATH="$STUB_DIR:$PATH" ${TIMEOUT[@]+"${TIMEOUT[@]}"} \
-    "$PI_BIN" -ne -e "$EXT_DIR" -p --model "pi-claude-cli/claude-haiku-4-5" "$1" \
+  cd "$WORK_DIR" && HOME="$TEST_HOME" PI_CLAUDE_TETHER_KEEPALIVE_MS=0 PATH="$STUB_DIR:$PATH" ${TIMEOUT[@]+"${TIMEOUT[@]}"} \
+    "$PI_BIN" -ne -e "$EXT_DIR" -p --model "pi-claude-tether/claude-haiku-4-5" "$1" \
     </dev/null
 }
 
@@ -108,45 +108,22 @@ if ! grep -q "PORT-OK" <<<"$OUT"; then
   exit 1
 fi
 
-# Background sub-agents must survive the turn's first `result`. The stub emits
-# one there and only reports the agent afterwards, so a provider that kills on
-# it prints LAUNCHED-WAITING and nothing else.
-FAN="$(PI_CLAUDE_CLI_CONTEXT=legacy run_pi "fanout")"
-require_stub
-
-echo "--- fan-out output ---"
-echo "$FAN"
-echo "----------------------"
-
-if ! grep -q "AGENT-REPORT" <<<"$FAN"; then
-  echo "e2e FAILED: sub-agent never reported back (killed on the first result)" >&2
-  exit 1
-fi
-if ! grep -q "Dig into the thing" <<<"$FAN"; then
-  echo "e2e FAILED: expected a sub-agent lifecycle marker" >&2
-  exit 1
-fi
-if grep -q "Search for a local checkout" <<<"$FAN"; then
-  echo "e2e FAILED: an auto-backgrounded Bash was reported as a sub-agent" >&2
-  exit 1
-fi
 # pi's thinking level must reach the CLI as the flags pi's own Anthropic
 # provider would send: off as thinking disabled (pi passes no level for off),
 # anything else as budget + effort + summaries.
 ARGV_FILE="$WORK_DIR/argv.jsonl"
-# Empty context must retain Pi ownership at the actual CLI boundary: native
-# tools are disabled. This also detects the old empty-means-legacy regression.
+# Pi ownership is unconditional at the actual CLI boundary: native tools are disabled.
 : >"$ARGV_FILE"
-EMPTY_OUT="$(CLAUDE_STUB_ARGV_FILE="$ARGV_FILE" PI_CLAUDE_CLI_CONTEXT='' run_pi 'magic word')"
+EMPTY_OUT="$(CLAUDE_STUB_ARGV_FILE="$ARGV_FILE" run_pi 'magic word')"
 require_stub
 if ! grep -q 'PORT-OK' <<<"$EMPTY_OUT" || ! grep -q '"--tools",""' "$ARGV_FILE"; then
-  echo "e2e FAILED: empty context did not disable native Claude tools" >&2
+  echo "e2e FAILED: native Claude tools were not disabled" >&2
   exit 1
 fi
 run_thinking() {
   : >"$ARGV_FILE"
-  cd "$WORK_DIR" && HOME="$TEST_HOME" CLAUDE_STUB_ARGV_FILE="$ARGV_FILE" PI_CLAUDE_CLI_KEEPALIVE_MS=0 PATH="$STUB_DIR:$PATH" ${TIMEOUT[@]+"${TIMEOUT[@]}"} \
-    "$PI_BIN" -ne -e "$EXT_DIR" -p --model "pi-claude-cli/claude-haiku-4-5" --thinking "$1" "magic word" \
+  cd "$WORK_DIR" && HOME="$TEST_HOME" CLAUDE_STUB_ARGV_FILE="$ARGV_FILE" PI_CLAUDE_TETHER_KEEPALIVE_MS=0 PATH="$STUB_DIR:$PATH" ${TIMEOUT[@]+"${TIMEOUT[@]}"} \
+    "$PI_BIN" -ne -e "$EXT_DIR" -p --model "pi-claude-tether/claude-haiku-4-5" --thinking "$1" "magic word" \
     </dev/null >/dev/null
   require_stub >&2
   grep -- '--input-format' "$ARGV_FILE" | tail -1
@@ -172,7 +149,7 @@ STEER_STATE="$WORK_DIR/steer-state"
 STEER_OUT="$(cd "$WORK_DIR" && HOME="$TEST_HOME" XDG_STATE_HOME="$STEER_STATE" \
   CLAUDE_STUB_STEER_TRACE="$STEER_TRACE" PATH="$STUB_DIR:$PATH" ${TIMEOUT[@]+"${TIMEOUT[@]}"} \
   "$PI_BIN" -ne -e "$EXT_DIR" -e "$EXT_DIR/tests/e2e/steer-extension.ts" \
-  --mode json -p --model "pi-claude-cli/claude-haiku-4-5" "FIXTURE-START" </dev/null)"
+  --mode json -p --model "pi-claude-tether/claude-haiku-4-5" "FIXTURE-START" </dev/null)"
 require_stub
 echo '--- native Pi steering + warm follow-up ---'
 node - "$STEER_TRACE" "$STEER_STATE/$PCC_STATE_LEAF/retire.log" <<'NODE'

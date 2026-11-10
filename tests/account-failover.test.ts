@@ -2,7 +2,13 @@ import "./cli-path-fixture";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -67,8 +73,8 @@ import { accountConfigDir, markAccountExhausted } from "../src/accounts";
 const model = {
   id: "claude-haiku-4-5",
   name: "Claude Haiku 4.5",
-  api: "pi-claude-cli",
-  provider: "pi-claude-cli",
+  api: "pi-claude-tether",
+  provider: "pi-claude-tether",
   reasoning: true,
   input: "text",
   cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
@@ -189,11 +195,10 @@ beforeEach(() => {
   resetCliProcessesForTests();
   vi.useFakeTimers();
   vi.clearAllMocks();
-  vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "pi");
-  vi.stubEnv("PI_CLAUDE_CLI_STATE_DIR", stateDir);
-  vi.stubEnv("PI_CLAUDE_CLI_ACCOUNTS", "default,b");
-  vi.stubEnv("PI_CLAUDE_CLI_ACCOUNT", "");
-  vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "");
+  vi.stubEnv("PI_CLAUDE_TETHER_STATE_DIR", stateDir);
+  vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNTS", "default,b");
+  vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNT", "");
+  vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "");
 });
 
 afterEach(() => {
@@ -204,7 +209,7 @@ afterEach(() => {
 
 describe("multi-account failover inside the provider", () => {
   it("replays a zero-output rejection on the next account inside one turn", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     const rateLimits: Array<{ info: unknown; account: unknown }> = [];
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       // Production always runs behind pi's response hook.
@@ -273,7 +278,7 @@ describe("multi-account failover inside the provider", () => {
   });
 
   it("does NOT replay when the rejected attempt already emitted content", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -315,7 +320,7 @@ describe("multi-account failover inside the provider", () => {
   });
 
   it("does NOT replay a rejection that arrives after a handed-off tool", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -369,7 +374,7 @@ describe("multi-account failover inside the provider", () => {
     // When the rejected attempt streams nothing, its error result
     // carries usage.input_tokens=111. The replayed success must bill
     // 111 + its own 5, not the replay alone.
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -394,7 +399,7 @@ describe("multi-account failover inside the provider", () => {
   it("carries streamed spend exactly once when the result adds nothing", async () => {
     // Account for 50 streamed input tokens followed by a zero-usage rejection.
     // Carrying the result must not double-count the streamed 50.
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -426,7 +431,7 @@ describe("multi-account failover inside the provider", () => {
   });
 
   it("fails with the original error plus per-account reset times when all are exhausted", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     markAccountExhausted("b", FUTURE_RESETSAT);
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
@@ -452,7 +457,7 @@ describe("multi-account failover inside the provider", () => {
   });
 
   it("terminates on the declared set when every resetsAt is already past", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -483,12 +488,12 @@ describe("multi-account failover inside the provider", () => {
   });
 
   it("terminates on the declared set when exhaustion writes fail", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     // A state dir the provider cannot write to: marks are swallowed, so the
     // files can never shrink the selection — the in-memory tried set must.
     const blocker = join(stateDir, "blocker");
     writeFileSync(blocker, "not a directory");
-    vi.stubEnv("PI_CLAUDE_CLI_STATE_DIR", blocker);
+    vi.stubEnv("PI_CLAUDE_TETHER_STATE_DIR", blocker);
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -518,8 +523,8 @@ describe("multi-account failover inside the provider", () => {
   it("uses the manual account choice for spawns and probes", async () => {
     // A fresh name: the version-probe cache is per directory, so this
     // account's probe observably runs under its own CLAUDE_CONFIG_DIR.
-    vi.stubEnv("PI_CLAUDE_CLI_ACCOUNTS", "default,c");
-    vi.stubEnv("PI_CLAUDE_CLI_ACCOUNT", "c");
+    vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNTS", "default,c");
+    vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNT", "c");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -544,8 +549,8 @@ describe("multi-account failover inside the provider", () => {
     // under accounts/solo/claude-config, never the inherited environment.
     // A fresh name: the version-probe cache is per directory, so this
     // account's probe observably runs under its own CLAUDE_CONFIG_DIR.
-    vi.stubEnv("PI_CLAUDE_CLI_ACCOUNTS", "solo");
-    vi.stubEnv("PI_CLAUDE_CLI_ACCOUNT", "solo");
+    vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNTS", "solo");
+    vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNT", "solo");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -565,7 +570,7 @@ describe("multi-account failover inside the provider", () => {
   });
 
   it("fails the turn loudly for an undeclared manual account", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_ACCOUNT", "c");
+    vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNT", "c");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -573,11 +578,11 @@ describe("multi-account failover inside the provider", () => {
     expect(childProcs()).toHaveLength(0);
     const error = streamEvents().find((e: any) => e.type === "error");
     expect(error).toBeDefined();
-    expect(error.error.errorMessage).toContain("PI_CLAUDE_CLI_ACCOUNT");
+    expect(error.error.errorMessage).toContain("PI_CLAUDE_TETHER_ACCOUNT");
   });
 
   it("stays on the fresh account for a later spawn before resetsAt", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     markAccountExhausted("default", FUTURE_RESETSAT);
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
@@ -590,35 +595,8 @@ describe("multi-account failover inside the provider", () => {
     expect(streamEvents().find((e: any) => e.type === "done")).toBeDefined();
   });
 
-  it("also fails over on the legacy observer path", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "legacy");
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
-    streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
-      onResponse: (async () => {}) as any,
-    } as any);
-    await vi.advanceTimersByTimeAsync(0);
-    const first = childProcs()[0];
-    await initProc(first);
-    await writeLine(first, rejectedEvent(FUTURE_RESETSAT));
-    await writeLine(first, resultError(WEEKLY_LIMIT_TEXT));
-    await vi.advanceTimersByTimeAsync(10);
-    expect(childProcs()).toHaveLength(2);
-    await textAnswer(childProcs()[1], "B-LEGACY");
-    await vi.advanceTimersByTimeAsync(10);
-    const done = streamEvents().find((e: any) => e.type === "done");
-    expect(done).toBeDefined();
-    expect(
-      done.message.content
-        .filter((c: any) => c.type === "text")
-        .map((c: any) => c.text)
-        .join(""),
-    ).toContain("B-LEGACY");
-  });
-  it("pins the legacy session sidecar to the account that minted it", async () => {
-    // Failover retires default's process and answers on b; the sidecar must
-    // record b, so a later spawn under default never --resumes b's session.
-    vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "legacy");
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+  it("keeps failover history Pi-owned without creating a session sidecar", async () => {
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
       sessionId: "pi-account-pin",
@@ -630,13 +608,12 @@ describe("multi-account failover inside the provider", () => {
     await writeLine(first, resultError(WEEKLY_LIMIT_TEXT));
     await vi.advanceTimersByTimeAsync(10);
     expect(childProcs()).toHaveLength(2);
-    await textAnswer(childProcs()[1], "B-LEGACY");
+    expect(spawnEnv(1).CLAUDE_CONFIG_DIR).toBe(accountConfigDir("b"));
+    await textAnswer(childProcs()[1], "B-PI");
     await vi.advanceTimersByTimeAsync(10);
     expect(streamEvents().find((e: any) => e.type === "done")).toBeDefined();
-    const sidecar = JSON.parse(
-      readFileSync(join(stateDir, "session-map.json"), "utf8"),
-    ) as Record<string, unknown>;
-    expect(sidecar["pi-account-pin"]).toMatchObject({ account: "b" });
+    expect(existsSync(join(stateDir, "session-map.json"))).toBe(false);
+    expect(existsSync(join(stateDir, "sysprompt"))).toBe(false);
   });
 });
 
@@ -716,8 +693,8 @@ describe("usage-credit guard", () => {
   }
 
   it("fails an overage-billed success turn and never replays it (guard beats failover)", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_ACCOUNTS", "default,b");
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNTS", "default,b");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -732,7 +709,7 @@ describe("usage-credit guard", () => {
     expect(childProcs()).toHaveLength(1);
     const error = await guardError();
     expect(error.error.errorMessage).toContain(
-      "PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS=1",
+      "PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS=1",
     );
     // Streamed content stays, but the turn is failed, not answered.
     expect(error.error.errorMessage).toContain("stays in the transcript");
@@ -767,7 +744,7 @@ describe("usage-credit guard", () => {
   });
 
   it("fails an overage-billed rejection instead of failing over", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -790,8 +767,8 @@ describe("usage-credit guard", () => {
     // with failover armed. The guard runs before failover, so the turn
     // fails on the first account with no replay. With the guard removed
     // this same shape replays onto account b (2 spawns).
-    vi.stubEnv("PI_CLAUDE_CLI_ACCOUNTS", "default,b");
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNTS", "default,b");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);
@@ -806,7 +783,7 @@ describe("usage-credit guard", () => {
     expect(childProcs()).toHaveLength(1);
     const error = await guardError();
     expect(error.error.errorMessage).toContain(
-      "PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS=1",
+      "PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS=1",
     );
     expect(streamEvents().some((e) => e.type === "done")).toBe(false);
   });
@@ -907,8 +884,8 @@ describe("usage-credit guard", () => {
     expect(error.error.errorMessage).toContain("their effects stand");
   });
 
-  it("lets an overage-billed turn succeed with PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS=1", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS", "1");
+  it("lets an overage-billed turn succeed with PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS=1", async () => {
+    vi.stubEnv("PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS", "1");
     streamViaCli(model, { messages: [{ role: "user", content: "hello" }] }, {
       onResponse: (async () => {}) as any,
     } as any);

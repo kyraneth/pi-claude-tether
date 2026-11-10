@@ -113,7 +113,7 @@ export function formatCliStatus(
   lines.push(
     `  tested range: ${MIN_CONTEXT_CLI_VERSION}-${TESTED_CLI_MAX} ` +
       `(older errors; newer warns once and continues, ` +
-      `PI_CLAUDE_CLI_STRICT_VERSION=1 refuses)`,
+      `PI_CLAUDE_TETHER_STRICT_VERSION=1 refuses)`,
   );
   if ("version" in installed && isNewerThanTestedCli(installed.version)) {
     lines.push(

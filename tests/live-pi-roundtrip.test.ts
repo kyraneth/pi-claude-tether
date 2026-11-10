@@ -69,9 +69,8 @@ export default function(pi) {
       cwd,
       env: {
         PI_CODING_AGENT_DIR: join(cwd, "agent"),
-        PI_CLAUDE_CLI_CONTEXT: "pi",
       },
-      provider: "pi-claude-cli",
+      provider: "pi-claude-tether",
       model: "claude-opus-4-6",
       args: [
         "--no-session",
@@ -115,7 +114,7 @@ export default function(pi) {
         30_000,
       );
       expect(await client.getLastAssistantText()).toBe(token);
-      await client.setModel("pi-claude-cli", "claude-opus-4-6");
+      await client.setModel("pi-claude-tether", "claude-opus-4-6");
       await client.promptAndWait(
         "What exact token did the previous assistant just provide? Answer only the token, without tools.",
         undefined,

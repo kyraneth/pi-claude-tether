@@ -11,7 +11,6 @@ vi.mock("../src/handoff-broker", () => ({
   stopHandoffBroker: vi.fn(),
 }));
 vi.mock("../src/mcp-config", () => ({
-  getCustomToolDefs: vi.fn(),
   writeSchemaFile: vi.fn(() => ({
     schemaPath: "schema",
     version: 1,
@@ -42,7 +41,6 @@ import { writeSchemaFile } from "../src/mcp-config";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  delete process.env.PI_CLAUDE_CLI_CONTEXT;
 });
 
 describe("pi ownership at registration", () => {
@@ -90,7 +88,9 @@ describe("pi ownership at registration", () => {
     }
     expect(retireAllCliProcesses).toHaveBeenCalledTimes(5);
     expect(setStatus).toHaveBeenCalledWith("claude-rate-limit", undefined);
-    expect(setStatus).toHaveBeenCalledWith("claude-subagents", undefined);
+    expect(
+      setStatus.mock.calls.some(([key]) => key === "claude-subagents"),
+    ).toBe(false);
   });
 
   it("declares the prompt-cache lifetime and the warm decline for its provider", async () => {
@@ -113,7 +113,9 @@ describe("pi ownership at registration", () => {
     // The warm decline answers only for this provider's models.
     const decide = localHandlers.get("cache_warming_decision");
     expect(typeof decide).toBe("function");
-    expect(await decide({}, { model: { provider: "pi-claude-cli" } })).toEqual({
+    expect(
+      await decide({}, { model: { provider: "pi-claude-tether" } }),
+    ).toEqual({
       action: "stop",
     });
     expect(
@@ -135,8 +137,8 @@ describe("pi ownership at registration", () => {
     // index.ts mirrors the provider's isSingleDefaultAccountSet rule: a
     // single NAMED entry must probe under accounts/<name>/claude-config so
     // the login hint names the directory that needs `claude auth login`.
-    // Only the untouched legacy shape inherits the environment (undefined).
-    vi.stubEnv("PI_CLAUDE_CLI_ACCOUNTS", "solo");
+    // Only the single-default account leaves directory resolution to the private Pi profile.
+    vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNTS", "solo");
     const { validateCliAuth } = await import("../src/process-manager");
     const { accountConfigDir } = await import("../src/accounts");
     const freshPi = () => ({
@@ -151,9 +153,9 @@ describe("pi ownership at registration", () => {
     for (const call of vi.mocked(validateCliAuth).mock.calls) {
       expect(call[1]).toBe(accountConfigDir("solo"));
     }
-    // Control: exactly ["default"] keeps the inherited environment.
+    // Control: exactly ["default"] uses the default private Pi profile.
     vi.clearAllMocks();
-    vi.stubEnv("PI_CLAUDE_CLI_ACCOUNTS", "default");
+    vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNTS", "default");
     register(freshPi() as any);
     expect(validateCliAuth).toHaveBeenCalled();
     for (const call of vi.mocked(validateCliAuth).mock.calls) {

@@ -1,9 +1,9 @@
 # Automatic account failover (opt-in)
 
-> Opt-in only: automatic failover is OFF unless `PI_CLAUDE_CLI_FAILOVER=1`.
+> Opt-in only: automatic failover is OFF unless `PI_CLAUDE_TETHER_FAILOVER=1`.
 > When off, a rejected subscription limit fails the turn exactly as before —
 > no replay, no exhaustion is recorded, and no exhaustion file is consulted.
-> Manual profile selection (`PI_CLAUDE_CLI_ACCOUNT`, see README) works with
+> Manual profile selection (`PI_CLAUDE_TETHER_ACCOUNT`, see README) works with
 > or without this gate.
 
 When a Claude subscription hits its limit mid-session, Pi 1.4.0 does not
@@ -37,11 +37,11 @@ README "Usage credits (overage) guard").
 
 1. The failing account is marked exhausted until the `resetsAt` the CLI
    itself reported — one small JSON file per account under the existing
-   state dir (`PI_CLAUDE_CLI_STATE_DIR` or the package state dir from README,
+   state dir (`PI_CLAUDE_TETHER_STATE_DIR` or the package state dir from README,
    `account-exhausted-<name>.json`), written atomically (write + rename).
    No lock; values come from CLI events and the last writer wins.
 2. The process is retired and the same request is re-run on the first
-   account in `PI_CLAUDE_CLI_ACCOUNTS` order that is neither exhausted nor
+   account in `PI_CLAUDE_TETHER_ACCOUNTS` order that is neither exhausted nor
    already tried in this provider call, with a full history import, inside
    the same provider call — reusing the existing replay machinery, so pi
    sees a single turn. The tried set lives in memory and bounds the loop:

@@ -75,10 +75,10 @@ const MIN_BUDGET_TOKENS = 1024;
 /**
  * The display the CLI is asked for. Summaries by default, as pi-ai sends:
  * billing counts the full thinking either way, so showing it costs nothing.
- * `PI_CLAUDE_CLI_THINKING_DISPLAY=omitted` opts out.
+ * `PI_CLAUDE_TETHER_THINKING_DISPLAY=omitted` opts out.
  */
 export function resolveThinkingDisplay(): ThinkingDisplay {
-  return process.env.PI_CLAUDE_CLI_THINKING_DISPLAY?.trim().toLowerCase() ===
+  return process.env.PI_CLAUDE_TETHER_THINKING_DISPLAY?.trim().toLowerCase() ===
     "omitted"
     ? "omitted"
     : "summarized";

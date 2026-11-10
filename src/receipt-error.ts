@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { HandoffResult } from "./handoff-broker.js";
 
-/** Official Claude Code 2.1.284/2.1.311 error codec: 10,000 UTF-16 units,
+/** Official Claude Code 2.1.284/2.1.311/2.1.321 error codec: 10,000 UTF-16 units,
  * with a 1,024-unit no-truncation allowance. These are vendor constants,
  * not adapter limits. The middle is replaced by the exact counted marker.
  * Qualified against native receipt hashes and real Pi; never applies to

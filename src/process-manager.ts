@@ -24,12 +24,6 @@ import { runtimeFile, RUNTIME_FILE_MODE } from "./runtime-dir.js";
 import { PI_CLAUDE_CONFIG_DIR } from "./accounts.js";
 import { packageCliBinDir } from "./data-dir.js";
 import {
-  DEFAULT_SYSTEM_PROMPT_MODE,
-  type SystemPromptMode,
-} from "./system-prompt-mode.js";
-import { resolveAutocompact } from "./autocompact.js";
-import {
-  usesPiContext,
   ContextPolicyError,
   assertContextCliVersion,
   MIN_CONTEXT_CLI_VERSION,
@@ -38,33 +32,18 @@ import {
   isNewerThanTestedCli,
   strictCliVersion,
 } from "./context-policy.js";
-import { envFlag, isEphemeral } from "./env-flag.js";
+import { envFlag } from "./env-flag.js";
 import { thinkingSpawnArgs, type CliThinking } from "./thinking-config.js";
 
 /**
  * Spawn a Claude CLI subprocess with all required flags for stream-json communication.
  *
  * @param modelId - The model ID to pass via --model flag
- * @param systemPrompt - Optional system prompt. In `claude` mode it is appended
- *   to Claude Code's own via --append-system-prompt-file; in `pi` mode it
- *   replaces it via --system-prompt-file. The `-file` suffix is required: the
- *   unsuffixed flags take a literal string. See src/system-prompt-mode.ts.
- * @param options - Optional cwd, AbortSignal, thinking and prompt mode
+ * @param systemPrompt - Pi's complete system prompt, staged through
+ *   --system-prompt-file to replace Claude's own prompt.
+ * @param options - Optional cwd, AbortSignal, thinking and MCP/account routing
  * @returns The spawned ChildProcess with piped stdin/stdout/stderr
  */
-/** Truthy PI_CLAUDE_CLI_HERMETIC opts in to hermetic mode (see README). */
-function isHermetic(): boolean {
-  return envFlag("PI_CLAUDE_CLI_HERMETIC");
-}
-
-/**
- * Truthy PI_CLAUDE_CLI_STRICT_MCP restricts the CLI to this extension's own
- * schema-only server WITHOUT hermetic mode's settings blackout (see README).
- */
-function isStrictMcp(): boolean {
-  return envFlag("PI_CLAUDE_CLI_STRICT_MCP");
-}
-
 /**
  * Where a spawn's system prompt is staged. Scoped to the CLI session so
  * concurrent turns in one pi process cannot clobber each other.
@@ -89,17 +68,15 @@ function cliPathKey(env: NodeJS.ProcessEnv): string {
   );
 }
 
-function cliEnvironment(claudeConfigDir?: string): NodeJS.ProcessEnv {
+export function cliEnvironment(claudeConfigDir?: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  // An explicit account directory always wins (manual selection and
-  // failover); otherwise the pi path keeps its fixed private profile and the
-  // legacy path keeps inheriting the caller's environment, as before.
+  // Explicit account selection wins; otherwise use Pi's isolated default.
   if (claudeConfigDir !== undefined) {
     env.CLAUDE_CONFIG_DIR = claudeConfigDir;
-  } else if (usesPiContext(env)) {
+  } else {
     env.CLAUDE_CONFIG_DIR = PI_CLAUDE_CONFIG_DIR;
   }
-  if (usesPiContext(env)) {
+  {
     // Prefer a Pi-private Claude Code install without changing the global binary
     // used by other Claude Code workflows. All probes and the child agree.
     // The directory is derived from the installed package name (src/data-dir.ts).
@@ -254,16 +231,16 @@ export function checkTestedCliVersion(
     throw new ContextPolicyError(
       `Claude Code ${version} is newer than the tested range ` +
         `${MIN_CONTEXT_CLI_VERSION}-${TESTED_CLI_MAX}. ` +
-        `Unset PI_CLAUDE_CLI_STRICT_VERSION to run it with a one-time warning, ` +
+        `Unset PI_CLAUDE_TETHER_STRICT_VERSION to run it with a one-time warning, ` +
         `or update the CLI to a tested version (see README).`,
     );
   }
   if (!warnedNewerCliVersions.has(version)) {
     warnedNewerCliVersions.add(version);
     console.warn(
-      `[pi-claude-cli] Claude Code ${version} is newer than the tested range ` +
+      `[pi-claude-tether] Claude Code ${version} is newer than the tested range ` +
         `${MIN_CONTEXT_CLI_VERSION}-${TESTED_CLI_MAX}; continuing with a one-time ` +
-        `warning (not yet qualified). Set PI_CLAUDE_CLI_STRICT_VERSION=1 to ` +
+        `warning (not yet qualified). Set PI_CLAUDE_TETHER_STRICT_VERSION=1 to ` +
         `refuse newer CLIs instead.`,
     );
   }
@@ -302,7 +279,7 @@ function systemPromptFilePath(sessionKey?: string): string {
   const suffix = sessionKey
     ? `-${sessionKey.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 128)}`
     : "";
-  return runtimeFile(`pi-claude-cli-sysprompt${suffix}.txt`);
+  return runtimeFile(`pi-claude-tether-sysprompt${suffix}.txt`);
 }
 
 export function spawnClaude(
@@ -314,18 +291,12 @@ export function spawnClaude(
     /** The thinking this process starts with; see src/thinking-config.ts. */
     thinking?: CliThinking;
     mcpConfigPath?: string;
-    resumeSessionId?: string;
     newSessionId?: string;
-    systemPromptMode?: SystemPromptMode;
     /** The account profile this spawn must run under. Unset keeps prior behavior. */
     claudeConfigDir?: string;
   },
 ): ChildProcess {
-  const piContext = usesPiContext();
-  if (
-    piContext &&
-    (envFlag("CLAUDE_CODE_SIMPLE") || envFlag("CLAUDE_CODE_SAFE_MODE"))
-  ) {
+  if (envFlag("CLAUDE_CODE_SIMPLE") || envFlag("CLAUDE_CODE_SAFE_MODE")) {
     throw new ContextPolicyError(
       "Unset CLAUDE_CODE_SIMPLE/CLAUDE_CODE_SAFE_MODE: pi context requires subscription authentication and the explicit MCP bridge.",
     );
@@ -355,54 +326,26 @@ export function spawnClaude(
     "AskUserQuestion",
   ];
 
-  // Two independent ways to keep the user's Claude Code environment out of pi
-  // turns. Both flags verified accepted on claude 2.1.237.
-  //
-  // --strict-mcp-config loads ONLY the servers from --mcp-config (our
-  // schema-only custom-tools server survives; the user's personal and project
-  // MCP servers do not). A host wants this on its own: MCP servers the host
-  // did not configure are invisible to it, bypass its tool guards, and are
-  // never counted by pi-side status or context accounting.
-  if (piContext || isHermetic() || isStrictMcp()) {
-    args.push("--strict-mcp-config");
-  }
+  // Pi owns tools, instructions and history; Claude is an isolated transport.
+  args.push(
+    "--strict-mcp-config",
+    "--setting-sources",
+    "",
+    "--disable-slash-commands",
+    "--no-chrome",
+    "--tools",
+    "",
+  );
 
-  // An empty --setting-sources skips user/project/local settings — hooks,
-  // CLAUDE.md auto-memory, permission allowlists. Kept separate from the MCP
-  // flag on purpose: a host that already suppresses pi's own copy of
-  // CLAUDE.md relies on the CLI loading it, and bundling the two would leave
-  // the model with no project instructions from either side.
-  if (piContext || isHermetic()) {
-    args.push("--setting-sources", "");
-  }
-  if (piContext) {
-    args.push("--disable-slash-commands", "--no-chrome", "--tools", "");
-  }
-
-  if (!piContext && options?.resumeSessionId) {
-    // Resume an existing session — CLI loads prior conversation from disk
-    args.push("--resume", options.resumeSessionId);
-  } else if (options?.newSessionId) {
-    // First turn: create session with this ID so subsequent turns can --resume it
+  if (options?.newSessionId) {
+    // The id routes this live process's MCP handoffs; it is never persisted.
     args.push("--session-id", options.newSessionId);
   }
 
-  // Nothing the CLI would write here is ever read back, for one of two
-  // reasons. Under pi context the process is a disposable cache of pi's
-  // history and is never resumed. PI_CLAUDE_CLI_EPHEMERAL (src/env-flag.ts)
-  // marks a legacy one-shot with no next turn, so its transcript under
-  // ~/.claude/projects would be pure disk debris (~60 KB per call).
-  // --session-id stays: the id still keys this spawn's staged prompt and MCP
-  // config, and the CLI honours it without writing anything. Verified on
-  // claude 2.1.280 with exactly this flag set (stream-json + --session-id): no
-  // transcript written, the result envelope carried the requested session_id.
-  // A legacy pi session that only ever runs ephemeral never reaches --resume
-  // either: session-map.ts records no pairing for it to resume from.
-  if (piContext || isEphemeral()) {
-    args.push("--no-session-persistence");
-  }
+  // Each live process is a disposable cache of Pi history, never a disk resume.
+  args.push("--no-session-persistence");
 
-  if (systemPrompt || piContext) {
+  {
     // Write the system prompt to a temp file and pass the FILE flags.
     //
     // `--system-prompt` / `--append-system-prompt` take a literal string, NOT
@@ -418,29 +361,20 @@ export function spawnClaude(
     // (see provider.ts), and pi can run two turns of one process at once —
     // its own sub-agents do. A shared per-pid path would let one turn
     // overwrite the prompt another turn is about to read.
-    const tmpFile = systemPromptFilePath(
-      options?.resumeSessionId ?? options?.newSessionId,
-    );
+    const tmpFile = systemPromptFilePath(options?.newSessionId);
     writeFileSync(tmpFile, systemPrompt ?? "", {
       encoding: "utf-8",
       mode: RUNTIME_FILE_MODE,
     });
     chmodSync(tmpFile, RUNTIME_FILE_MODE);
-    // `pi` mode replaces Claude Code's prompt outright; `claude` mode layers
-    // pi's on top of it. See src/system-prompt-mode.ts for the trade-off.
-    const mode = piContext
-      ? "pi"
-      : (options?.systemPromptMode ?? DEFAULT_SYSTEM_PROMPT_MODE);
-    args.push(
-      mode === "pi" ? "--system-prompt-file" : "--append-system-prompt-file",
-      tmpFile,
-    );
+    // Always replace Claude's own prompt with Pi's prepared instructions.
+    args.push("--system-prompt-file", tmpFile);
   }
 
   // Host-supplied Claude Code settings (hooks, permissions). This is how a
   // host injects PreToolUse guards — e.g. a host's worktree-paths guard —
   // without pi intercepting the CLI's native tool execution.
-  const settingsPath = process.env.PI_CLAUDE_CLI_SETTINGS;
+  const settingsPath = process.env.PI_CLAUDE_TETHER_SETTINGS;
   if (settingsPath) {
     args.push("--settings", settingsPath);
   }
@@ -456,23 +390,13 @@ export function spawnClaude(
     args.push("--mcp-config", options.mcpConfigPath);
   }
 
-  // Auto-compact window (PI_CLAUDE_CLI_AUTOCOMPACT, default 200k — see
-  // src/autocompact.ts). The CLI does not keep flags across --resume, so
-  // like the system prompt this goes on every spawn. Resolved per spawn so
-  // a host can change the setting without restarting pi; the flag is
-  // config, not context, so changing it never invalidates the prompt cache.
-  const autocompact = resolveAutocompact();
-  if (!piContext && autocompact !== undefined) {
-    args.push("--autocompact", autocompact);
-  }
-
   // Proxied custom tools block inside the CLI's MCP client until pi has run
   // the tool (src/handoff-broker.ts). Sub-agents and long shell tools take
   // minutes, so unless the host set its own limit, give the MCP client an
   // hour before it gives up on a call. Config, not context: it never touches
   // the prompt cache.
   const env = cliEnvironment(options?.claudeConfigDir);
-  if (piContext) {
+  {
     // Do not use --bare: it disables subscription OAuth/keychain reads.
     // Empty setting sources drop user/project/local hooks, but explicit
     // host --settings (including safety guards) and managed policy survive.
@@ -692,9 +616,65 @@ export async function validateCliAuth(
   return false;
 }
 
+/**
+ * `claude auth status` for one profile directory, as the CLI reports it
+ * (logged in, email, plan), or undefined when the CLI gives no JSON. The
+ * CLI reads its own login; nothing here touches a credential.
+ */
+export async function cliAuthStatus(
+  claudeConfigDir: string,
+  signal?: AbortSignal,
+): Promise<
+  | {
+      loggedIn: boolean;
+      email?: string;
+      subscriptionType?: string | null;
+      configDirectory?: string;
+      authMethod?: string;
+      orgName?: string;
+    }
+  | undefined
+> {
+  let stdout: string | Buffer = "";
+  try {
+    stdout = await cliOutput(
+      ["auth", "status"],
+      cliEnvironment(claudeConfigDir),
+      signal,
+    );
+  } catch (err) {
+    // A logged-out profile exits 1 but still prints its JSON.
+    stdout = (err as { stdout?: Buffer | string }).stdout ?? "";
+  }
+  try {
+    const parsed: unknown = JSON.parse(
+      (typeof stdout === "string" ? stdout : stdout.toString()).trim(),
+    );
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      typeof (parsed as { loggedIn?: unknown }).loggedIn !== "boolean"
+    )
+      return undefined;
+    const row = parsed as Record<string, unknown>;
+    const text = (key: string) =>
+      typeof row[key] === "string" ? (row[key] as string) : undefined;
+    return {
+      loggedIn: row.loggedIn as boolean,
+      email: text("email"),
+      subscriptionType: text("subscriptionType"),
+      configDirectory: text("configDirectory"),
+      authMethod: text("authMethod"),
+      orgName: text("orgName"),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function warnUnauth(configDir: string | undefined): void {
   console.warn(
-    "[pi-claude-cli] Dedicated Pi Claude profile is not authenticated. " +
+    "[pi-claude-tether] Dedicated Pi Claude profile is not authenticated. " +
       `On this node run: CLAUDE_CONFIG_DIR="${configDir ?? PI_CLAUDE_CONFIG_DIR}" claude auth login --claudeai`,
   );
 }

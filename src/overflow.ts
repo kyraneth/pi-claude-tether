@@ -48,7 +48,10 @@ export function rewriteOverflowMessage(
 ): { message: Record<string, unknown> } | undefined {
   if (message.role !== "assistant") return undefined;
   if (message.stopReason !== "error") return undefined;
-  if (message.provider !== "pi-claude-cli" && ctxProvider !== "pi-claude-cli")
+  if (
+    message.provider !== "pi-claude-tether" &&
+    ctxProvider !== "pi-claude-tether"
+  )
     return undefined;
 
   const errorMessage = message.errorMessage ?? "";

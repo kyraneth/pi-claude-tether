@@ -53,14 +53,14 @@ export function buildRateLimitPayload(
 
 /**
  * Opt-in to allow turns billed to usage credits/overage (default: fail
- * them). Same name as dmmulroy/pi-claude-cli and @pi-plugins/claude-cli,
- * where PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS=1 likewise continues after an
+ * them). Same name as dmmulroy/pi-claude-tether and @pi-plugins/claude-cli,
+ * where PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS=1 likewise continues after an
  * overage charge instead of stopping the call.
  */
 export function allowUsageCredits(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  return (env.PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS ?? "") === "1";
+  return (env.PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS ?? "") === "1";
 }
 
 /**

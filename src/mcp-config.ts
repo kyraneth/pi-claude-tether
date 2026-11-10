@@ -33,16 +33,6 @@ import {
   RUNTIME_FILE_MODE,
 } from "./runtime-dir.js";
 
-/** The 6 built-in tools that pi handles natively (match pi tool names). */
-const BUILT_IN_TOOL_NAMES = new Set([
-  "read",
-  "write",
-  "edit",
-  "bash",
-  "grep",
-  "find",
-]);
-
 /** A custom tool definition with MCP-compatible schema. */
 export interface McpToolDef {
   name: string;
@@ -68,39 +58,17 @@ export interface SchemaFileWrite {
 /** Serialized tool defs as of the last write, for change detection. */
 let lastSchemaJson: string | undefined;
 let schemaVersion = 0;
-/** The legacy per-process config file's content never varies: written once. */
+/** The session-less config file's content never varies: written once. */
 let configWritten = false;
 /** Per-session config files this process wrote, for exit cleanup. */
 const sessionConfigPaths = new Map<string, string>();
-
-/**
- * Get custom tool definitions from pi, filtering out built-in tools.
- *
- * @param pi - The pi ExtensionAPI instance
- * @returns Array of custom tool definitions (empty if all tools are built-in)
- */
-export function getCustomToolDefs(pi: any): McpToolDef[] {
-  const allTools = pi.getAllTools();
-
-  if (!Array.isArray(allTools)) {
-    return [];
-  }
-
-  return allTools
-    .filter((tool: any) => !BUILT_IN_TOOL_NAMES.has(tool.name))
-    .map((tool: any) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.parameters,
-    }));
-}
 
 /** Where this process stages the tool schemas the CLI advertises. */
 function schemaFilePath(): string {
   return runtimeFile("mcp-schemas.json");
 }
 
-/** Where this process stages the legacy (session-less) `--mcp-config` file. */
+/** Where this process stages a session-less `--mcp-config` file. */
 function configFilePath(): string {
   return runtimeFile("mcp-config.json");
 }

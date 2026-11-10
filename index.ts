@@ -1,5 +1,5 @@
 /**
- * Pi extension entry point for pi-claude-cli.
+ * Pi extension entry point for pi-claude-tether.
  *
  * Registers a custom provider that routes LLM calls through the Claude Code CLI
  * subprocess using stream-json NDJSON protocol.
@@ -18,27 +18,42 @@ import {
   parseAccountSet,
   accountConfigDir,
   isSingleDefaultAccountSet,
+  selectAccount,
+  restoreAccount,
+  accountsForUpdate,
+  writeAccounts,
+  captureLaunchAccount,
+  isAccountPending,
 } from "./src/accounts.js";
 import {
-  getCustomToolDefs,
-  writeSchemaFile,
-  cleanupMcpConfigFiles,
-} from "./src/mcp-config.js";
+  ACCOUNT_ENTRY_TYPE,
+  accountsReport,
+  parseAccountArgs,
+  manageAccount,
+  sessionAccount,
+} from "./src/account-command.js";
+import { writeSchemaFile, cleanupMcpConfigFiles } from "./src/mcp-config.js";
 import { startHandoffBroker, stopHandoffBroker } from "./src/handoff-broker.js";
 import { cleanupRuntimeDir } from "./src/runtime-dir.js";
 import { retireAllCliProcesses } from "./src/cli-process.js";
 import { flushRequestLedger } from "./src/request-ledger.js";
 import { claudeCliStatus } from "./src/cli-version.js";
 import { cliThinkingLevelMap } from "./src/thinking-config.js";
+import {
+  catalogThinkingLevelMap,
+  cliCatalogModels,
+} from "./src/cli-catalog.js";
 import { rewriteOverflowMessage } from "./src/overflow.js";
 import {
   buildRateLimitPayload,
   rateLimitIdentity,
   withAccount,
 } from "./src/rate-limit.js";
-import type { TaskTrackerState } from "./src/types.js";
-import { usesPiContext } from "./src/context-policy.js";
 import { piContext } from "./src/pi-context.js";
+import {
+  guardRemovedSessionProvider,
+  warnRemovedEnvironment,
+} from "./src/removed-config.js";
 
 // Kill all active Claude subprocesses on process exit to prevent orphans
 process.on("exit", killAllProcesses);
@@ -54,7 +69,7 @@ process.on("beforeExit", () => {
   void retireAllCliProcesses("beforeExit");
 });
 
-const PROVIDER_ID = "pi-claude-cli";
+const PROVIDER_ID = "pi-claude-tether";
 
 /**
  * Status key carrying account rate-limit state to the front-end. Neutral
@@ -100,41 +115,6 @@ function publishRateLimit(
   }
 }
 
-/**
- * Live sub-agent state, on its own status key.
- *
- * Same reasoning as the rate-limit channel: this is state ABOUT the turn, not
- * content OF it. `task_progress` fires once per sub-agent tool call, so folding
- * frequent progress updates into the transcript would bury the turn and cost
- * context on every later replay. The durable half — one marker when a
- * sub-agent starts, one when it finishes —
- * goes in the turn instead, and needs no host change to render.
- */
-const SUBAGENTS_STATUS_KEY = "claude-subagents";
-/** Last payload pushed, so an unchanged snapshot does not rewrite the status. */
-let lastSubagentsJson: string | undefined;
-
-function publishTaskProgress(state: TaskTrackerState): void {
-  const setStatus = uiContext?.ui?.setStatus;
-  if (typeof setStatus !== "function") return;
-  const json = JSON.stringify(state);
-  if (json === lastSubagentsJson) return;
-  lastSubagentsJson = json;
-  try {
-    // An empty snapshot means the episode is over: CLEAR the key rather than
-    // pushing `{"tasks":[],...}`. A host reads a present status as live
-    // state, so an empty one left standing is a strip that still claims
-    // agents when there are none.
-    setStatus.call(
-      uiContext!.ui,
-      SUBAGENTS_STATUS_KEY,
-      state.tasks.length === 0 ? undefined : json,
-    );
-  } catch {
-    /* never break a turn over a status push */
-  }
-}
-
 /** Last staged schema, handed to every spawn; undefined until pi's registry is up. */
 let mcpSchema: { schemaPath: string; version: number } | undefined;
 
@@ -163,28 +143,17 @@ function ensureMcpSchema(
   pi: ExtensionAPI,
   context: Parameters<typeof piContext>[0],
 ): { schemaPath: string; version: number } | undefined {
-  try {
-    // The request, not the registry, is authoritative: inactive tools stay inactive.
-    const toolDefs = usesPiContext()
-      ? piContext(context).tools.map((t: any) => ({
-          name: t.name,
-          description: t.description,
-          inputSchema: t.parameters,
-        }))
-      : getCustomToolDefs(pi);
-
-    const { schemaPath, changed, version } = writeSchemaFile(toolDefs);
-    mcpSchema = { schemaPath, version };
-    if (changed) {
-      console.error(
-        `[pi-claude-cli] MCP config generated with ${toolDefs.length} custom tool(s)`,
-      );
-    }
-  } catch (err) {
-    if (usesPiContext()) throw err;
-    console.warn(
-      "[pi-claude-cli] MCP config generation failed, custom tools unavailable:",
-      err,
+  // The request, not the registry, is authoritative: inactive tools stay inactive.
+  const toolDefs = piContext(context).tools.map((t: any) => ({
+    name: t.name,
+    description: t.description,
+    inputSchema: t.parameters,
+  }));
+  const { schemaPath, changed, version } = writeSchemaFile(toolDefs);
+  mcpSchema = { schemaPath, version };
+  if (changed) {
+    console.error(
+      `[pi-claude-tether] MCP config generated with ${toolDefs.length} tool(s)`,
     );
   }
   return mcpSchema;
@@ -204,7 +173,7 @@ async function ensureHandoffSocket(): Promise<string | undefined> {
     handoffSocket = await startHandoffBroker();
   } catch (err) {
     console.warn(
-      "[pi-claude-cli] handoff socket unavailable, custom tools fall back to interrupt-and-resume:",
+      "[pi-claude-tether] handoff socket unavailable, custom tools fall back to interrupt-and-resume:",
       err,
     );
   }
@@ -212,6 +181,8 @@ async function ensureHandoffSocket(): Promise<string | undefined> {
 }
 
 export default function (pi: ExtensionAPI) {
+  warnRemovedEnvironment();
+  guardRemovedSessionProvider(pi);
   try {
     // Startup validation
     validateCliPresence(); // throws if CLI not on PATH
@@ -223,6 +194,9 @@ export default function (pi: ExtensionAPI) {
     // the login hint names the exact directory that needs `claude auth login`.
     // Only the untouched legacy shape inherits the environment.
     const startupAccounts = parseAccountSet();
+    // The account Pi was launched with: what a session without its own
+    // recorded switch uses.
+    const launchAccount = captureLaunchAccount();
     const singleDefaultStartup = isSingleDefaultAccountSet(startupAccounts);
     for (const name of startupAccounts) {
       void validateCliAuth(
@@ -231,47 +205,96 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
-    const models = getModels("anthropic").map((model) => ({
-      id: model.id,
-      name: model.name,
-      reasoning: model.reasoning,
-      input: model.input,
-      cost: model.cost,
-      contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens,
-      // Best-effort prompt-cache lifetime in seconds per retention tier,
-      // the shape Pi 1.4.0 documents (models.md "Prompt Cache Lifetimes")
-      // and pi-cache-optimizer writes for anthropic models (short 300,
-      // long 3600: Anthropic's documented 5m/1h, the values Pi ships for its
-      // own Claude models). Declaring it lets Pi's own machinery see the
-      // cache: /session economics instead of "cache economics unavailable".
-      // It does not enable any refresh through the CLI — this extension
-      // declines Pi-driven refreshes for its provider (see below), so the
-      // lifetime feeds visibility only.
-      promptCache: { short: 300, long: 3600 },
-      // pi's own per-model map, less `minimal` on adaptive models (it would
-      // send what `low` sends), so the selector offers only levels the model
-      // has, and each maps to the effort pi uses (resolveCliThinking reads
-      // it). It used to be widened to { xhigh, max } for every model, which
-      // offered xhigh/max on budget models that ignore effort, xhigh on
-      // Opus/Sonnet 4.6, and `off` on models whose thinking cannot be off.
-      thinkingLevelMap: cliThinkingLevelMap(model),
-    }));
+    // Pi's built-in Claude models plus any newer ones Claude Code offers.
+    // Rebuilt after each run so a model the CLI just learned about reaches
+    // /model without restarting Pi.
+    const buildModels = () => {
+      const models = getModels("anthropic").map((model) => ({
+        id: model.id,
+        name: model.name,
+        reasoning: model.reasoning,
+        input: model.input,
+        cost: model.cost,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+        // Best-effort prompt-cache lifetime in seconds per retention tier,
+        // the shape Pi 1.4.0 documents (models.md "Prompt Cache Lifetimes")
+        // and pi-cache-optimizer writes for anthropic models (short 300,
+        // long 3600: Anthropic's documented 5m/1h, the values Pi ships for its
+        // own Claude models). Declaring it lets Pi's own machinery see the
+        // cache: /session economics instead of "cache economics unavailable".
+        // It does not enable any refresh through the CLI — this extension
+        // declines Pi-driven refreshes for its provider (see below), so the
+        // lifetime feeds visibility only.
+        promptCache: { short: 300, long: 3600 },
+        // pi's own per-model map, less `minimal` on adaptive models (it would
+        // send what `low` sends), so the selector offers only levels the model
+        // has, and each maps to the effort pi uses (resolveCliThinking reads
+        // it). It used to be widened to { xhigh, max } for every model, which
+        // offered xhigh/max on budget models that ignore effort, xhigh on
+        // Opus/Sonnet 4.6, and `off` on models whose thinking cannot be off.
+        thinkingLevelMap: cliThinkingLevelMap(model),
+      }));
 
+      // Models Claude Code offers that this Pi release does not know yet
+      // (a model launched after Pi shipped). Pi's own entry wins whenever it
+      // exists; the CLI's cached catalog only adds what is missing. Cost is
+      // not in the catalog and is left at zero rather than guessed: these
+      // turns are billed to the subscription, not per token.
+      const known = new Set(models.map((m) => m.id));
+      for (const entry of cliCatalogModels(
+        startupAccounts.map((name) => accountConfigDir(name)),
+      )) {
+        if (known.has(entry.id)) continue;
+        models.push({
+          id: entry.id,
+          name: entry.name,
+          reasoning: entry.reasoning,
+          input: entry.input,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: entry.contextWindow,
+          maxTokens: entry.maxTokens,
+          promptCache: { short: 300, long: 3600 },
+          thinkingLevelMap: catalogThinkingLevelMap(entry),
+        } as (typeof models)[number]);
+      }
+      return models;
+    };
+    let models = buildModels();
+
+    const restoreSessionAccount = (ctx: unknown) => {
+      // Resume on the account this session last switched to, or the one Pi
+      // was launched with. A no longer declared account falls back too.
+      const branch =
+        (
+          ctx as {
+            sessionManager?: {
+              getBranch?(): Array<{
+                type?: string;
+                customType?: string;
+                data?: unknown;
+              }>;
+            };
+          }
+        )?.sessionManager?.getBranch?.() ?? [];
+      try {
+        restoreAccount(sessionAccount(branch, launchAccount));
+      } catch {
+        // Invalid/pending restored intent keeps failing loudly at the first turn.
+      }
+    };
     // Never change pi's active tools simply because this provider is installed.
     pi.on("session_start", async (_event: unknown, ctx: unknown) => {
       await retireAllCliProcesses("session_start");
       uiContext = ctx as typeof uiContext;
+      restoreSessionAccount(ctx);
       lastRateLimitJson = undefined;
-      lastSubagentsJson = undefined;
     });
 
     const retire = async (event: { type: string }) => {
       await retireAllCliProcesses(event.type);
       uiContext?.ui?.setStatus?.(RATE_LIMIT_STATUS_KEY, undefined);
-      uiContext?.ui?.setStatus?.(SUBAGENTS_STATUS_KEY, undefined);
       lastRateLimitJson = undefined;
-      lastSubagentsJson = undefined;
     };
     pi.on("model_select", retire);
     pi.on("session_shutdown", async (event: { type: string }) => {
@@ -282,13 +305,15 @@ export default function (pi: ExtensionAPI) {
       // retirement rows proofs read back (flushRequestLedger is the seam).
       await flushRequestLedger();
     });
-    pi.on("session_tree", retire);
+    pi.on("session_tree", async (event, ctx) => {
+      await retire(event);
+      restoreSessionAccount(ctx);
+    });
     pi.on("session_compact", retire);
 
     // Never warm the cache through the CLI. Pi's own refresher re-sends
     // the request with a one-token cap through this provider: a real extra
-    // billed turn (a full-history import on a new CLI process, or an
-    // appended turn under legacy --resume, possibly re-running tools).
+    // billed turn, potentially importing history and re-running tools.
     // The declared lifetime above feeds /session economics visibility only:
     // refreshes for this provider are always declined here. Other providers
     // are untouched — returning nothing leaves their decision to Pi and
@@ -296,6 +321,59 @@ export default function (pi: ExtensionAPI) {
     pi.on("cache_warming_decision", (_event, ctx) => {
       if (ctx.model?.provider === PROVIDER_ID)
         return { action: "stop" as const };
+    });
+
+    pi.registerCommand("claude-accounts", {
+      description:
+        "Manage official CLI accounts: list, add, login, status, switch, remove, doctor",
+      getArgumentCompletions: (prefix: string) => {
+        const options = [
+          "list",
+          "add",
+          "login --all",
+          "status",
+          "doctor",
+          ...parseAccountSet()
+            .filter((name) => !isAccountPending(name))
+            .map((name) => `switch ${name}`),
+        ];
+        const items = options
+          .filter((o) => o.startsWith(prefix))
+          .map((o) => ({ value: o, label: o }));
+        return items.length > 0 ? items : null;
+      },
+      handler: async (args, ctx) => {
+        const parsed = parseAccountArgs(args);
+        try {
+          if (parsed.action === "switch") {
+            const account = selectAccount(parsed.account);
+            if (parsed.persistent) {
+              const store = accountsForUpdate();
+              if (!store.accounts.some((a) => a.name === account))
+                store.accounts.push({ name: account });
+              store.default = account;
+              writeAccounts(store);
+            }
+            pi.appendEntry(ACCOUNT_ENTRY_TYPE, { account });
+            // Warm processes belong to the old account; the next turn spawns
+            // on the new one and imports the history (a cache write there).
+            await retire({ type: "account_switch" });
+            ctx.ui.notify(
+              await accountsReport(ctx.signal ?? undefined),
+              "info",
+            );
+          } else {
+            await manageAccount(parsed, ctx.ui, ctx.signal ?? undefined, () =>
+              retire({ type: "account_auth_or_remove" }),
+            );
+          }
+        } catch (err) {
+          ctx.ui.notify(
+            err instanceof Error ? err.message : String(err),
+            "error",
+          );
+        }
+      },
     });
 
     pi.registerCommand("claude-cli", {
@@ -323,7 +401,6 @@ export default function (pi: ExtensionAPI) {
             : undefined;
         },
         onRateLimit: publishRateLimit,
-        onTaskProgress: publishTaskProgress,
       });
     };
 
@@ -331,7 +408,7 @@ export default function (pi: ExtensionAPI) {
     // default stream fn (@earendil-works/pi-agent-core setDefaultStreamFn) resolves
     // model.api against pi-ai's global api registry instead — print mode
     // and nested agent loops take that path and would throw
-    // "No API provider registered for api: pi-claude-cli".
+    // "No API provider registered for api: pi-claude-tether".
     // Register the custom api id there too.
     registerApiDispatch(PROVIDER_ID, streamFn);
 
@@ -342,14 +419,27 @@ export default function (pi: ExtensionAPI) {
       return rewriteOverflowMessage(event?.message ?? {}, ctx?.model?.provider);
     });
 
-    pi.registerProvider(PROVIDER_ID, {
-      baseUrl: "pi-claude-cli",
-      apiKey: "unused",
-      api: "pi-claude-cli",
-      models,
-      streamSimple: streamFn,
+    const registerProvider = () =>
+      pi.registerProvider(PROVIDER_ID, {
+        baseUrl: "pi-claude-tether",
+        apiKey: "unused",
+        api: "pi-claude-tether",
+        models,
+        streamSimple: streamFn,
+      });
+    registerProvider();
+
+    // A run may have refreshed Claude Code's catalog (it does on a real
+    // turn). Re-register only when the model set actually changed;
+    // registration after startup takes effect immediately.
+    pi.on("agent_end", () => {
+      const next = buildModels();
+      const ids = (list: typeof models) => list.map((m) => m.id).join(",");
+      if (ids(next) === ids(models)) return;
+      models = next;
+      registerProvider();
     });
   } catch (err) {
-    console.error(`[pi-claude-cli] Failed to register provider:`, err);
+    console.error(`[pi-claude-tether] Failed to register provider:`, err);
   }
 }

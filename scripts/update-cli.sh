@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Staged, self-tested Claude Code CLI update for pi-claude-cli.
+# Staged, self-tested Claude Code CLI update for pi-claude-tether.
 #
 # Installs the requested version into a staging prefix, probes it
 # (version + a logged-out spawn-flags smoke in a sandbox HOME with no

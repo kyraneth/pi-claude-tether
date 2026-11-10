@@ -73,7 +73,7 @@ it("real owned Pi list-models exits without shutdown exceptions in an unwritable
         "-e",
         resolve("."),
         "--list-models",
-        "pi-claude-cli",
+        "pi-claude-tether",
         "--no-skills",
         "--no-prompt-templates",
         "--no-context-files",
@@ -92,7 +92,7 @@ it("real owned Pi list-models exits without shutdown exceptions in an unwritable
       },
     );
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("pi-claude-cli");
+    expect(result.stdout).toContain("pi-claude-tether");
     // Pi explicitly exits zero even when an exit listener throws.
     expect(result.stderr).toBe("");
     expect(readdirSync(made)).toEqual([]);

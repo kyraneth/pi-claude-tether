@@ -6,14 +6,13 @@
  *
  * - Custom MCP tools (mcp__custom-tools__*): ALLOWED when the handoff proxy is
  *   on — the schema server forwards the call to pi and the CLI keeps running;
- *   DENIED otherwise, so the legacy interrupt-and-resume handoff can run the
+ *   DENIED otherwise, so the interrupt-and-reimport handoff can run the
  *   tool in pi.
- * - Everything else (user MCP tools, internal tools): ALLOWED — Claude handles
+ * - Everything else (user MCP tools, internal tools): DENIED — Pi owns tools.
  */
 
 import type { ClaudeControlRequest } from "./types";
 import { CUSTOM_TOOLS_MCP_PREFIX } from "./tool-mapping.js";
-import { usesPiContext } from "./context-policy.js";
 
 export const TOOL_EXECUTION_DENIED_MESSAGE =
   "Tool execution is unavailable in this environment.";
@@ -54,7 +53,7 @@ export function handleControlRequest(
 ): boolean {
   if (!msg.request_id || !msg.request) {
     console.error(
-      "[pi-claude-cli] Malformed control_request: missing request_id or request object",
+      "[pi-claude-tether] Malformed control_request: missing request_id or request object",
       msg,
     );
     return false;
@@ -62,7 +61,7 @@ export function handleControlRequest(
 
   const toolName = msg.request?.tool_name ?? "";
   const isCustomTool = toolName.startsWith(CUSTOM_TOOLS_MCP_PREFIX);
-  const deny = isCustomTool ? !options?.allowHandoff : usesPiContext();
+  const deny = !isCustomTool || !options?.allowHandoff;
 
   const response: ControlResponse = {
     type: "control_response",

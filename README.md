@@ -5,8 +5,8 @@ Use your Claude subscription in [Pi](https://github.com/earendil-works/pi), thro
 Hi, I do most of my work in Pi and I have a Claude subscription. While Anthropic has not been magnanimous enough to let us use our subscription directly in third-party harnesses, it still allows its usage through [`claude -p`](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan), in its installed coding agent CLI. Pi is my main harness and I don't want to be swapping coding agents, and most importantly I don't want to juggle identities and system prompts. The goal of this tether is to unlock the high limits a subscription allows while using your own Pi custom prompt as much as possible, staying lighter on the system prompt than the less-than-optimal vendor harnesses, and not having to go through the API. I wrote it with a coding agent.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/kyraneth/pi-claude-tether/main/assets/flow-dark.svg">
-  <img alt="Pi sends the prompt, tools and history through the tether and the official Claude Code CLI to the model. A tool call comes back the same way to Pi, which runs the tool and saves the result. The result then goes back to the model." width="700" src="https://raw.githubusercontent.com/kyraneth/pi-claude-tether/main/assets/flow-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/flow-dark.svg">
+  <img alt="Pi sends the prompt, tools and history through the tether and the official Claude Code CLI to the model. A tool call comes back the same way to Pi, which runs the tool and saves the result. The result then goes back to the model." width="700" src="assets/flow-light.svg">
 </picture>
 
 ## Who it's for
@@ -22,7 +22,7 @@ pi install npm:pi-claude-tether
 CLAUDE_CONFIG_DIR="$HOME/.local/share/pi-claude-tether/claude-config" claude auth login --claudeai
 ```
 
-The tether reads that folder by default, so this login stays separate from any Claude Code you use yourself. If it worked, Claude models appear under `pi-claude-cli` in `/model`. The name comes from the project this started from.
+The tether reads that folder by default, so this login stays separate from any Claude Code you use yourself. If it worked, Claude models appear under `pi-claude-tether` in `/model`. Version 0.12.0 uses the new provider identity without an alias; see the [migration checklist](CHANGELOG.md#0120-migration).
 
 ## How it works
 
@@ -43,12 +43,12 @@ In short live tests on Sonnet 5.5, 98.3% of a warm turn's input came from the ca
 
 - You restart Pi often in long sessions. When the process restarts, the tether imports the history as text and the cache can go cold.
 - You're short on memory. Each parked session keeps a Claude process in memory.
-- You expect to run into usage credits. A turn billed to credits fails, unless you set `PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS=1`.
+- You expect to run into usage credits. A turn billed to credits fails, unless you set `PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS=1`.
 - You want several accounts without reading the rules. The tether supports them, but check Anthropic's terms first.
-- Your tools run for a very long time. The tether waits 30 minutes for a tool by default, then stops that Claude process, and the next turn imports the history again. I haven't tested a real tool against that limit.
+- Your tools run for a very long time. The tether waits 30 minutes for a tool by default, then stops that Claude process, and the next turn imports the history again. A real 33-minute tool survived this and answered after reimport; past about 30 minutes the CLI itself also ends its waiting turn, so expect a reimport either way. See "Long tools" in [docs/DETAILS.md](docs/DETAILS.md).
 - You need Pi's `onProviderStreamEvent` hook. The Claude CLI doesn't expose the raw stream, so the tether can't call it. The other provider hooks work.
 - You run it in a restricted sandbox and don't want to open anything up. It needs a short writable folder for its sockets, plus the Claude profile and state folders. If one is missing, the error tells you which.
 
 ## More
 
-This started as a fork of [pi-claude-cli](https://github.com/rchern/pi-claude-cli) through [Agustín Sacco's fork](https://github.com/agustinsacco/pi-claude-cli), and I'm grateful to Rebecca Chernoff and Agustín for their work. It's an independent project, and Anthropic didn't make it. The technical details are in [docs/DETAILS.md](https://github.com/kyraneth/pi-claude-tether/blob/main/docs/DETAILS.md). Please report problems in the [issues](https://github.com/kyraneth/pi-claude-tether/issues). [MIT license](https://github.com/kyraneth/pi-claude-tether/blob/main/LICENSE).
+This started as a fork of [pi-claude-cli](https://github.com/rchern/pi-claude-cli) through [Agustín Sacco's fork](https://github.com/agustinsacco/pi-claude-cli), and I'm grateful to Rebecca Chernoff and Agustín for their work. It's an independent project, and Anthropic didn't make it. The technical details are in [docs/DETAILS.md](docs/DETAILS.md). Please report problems in the [issues](https://github.com/kyraneth/pi-claude-tether/issues). [MIT license](LICENSE).

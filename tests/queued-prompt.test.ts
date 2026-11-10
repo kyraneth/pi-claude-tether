@@ -19,7 +19,7 @@ import { PassThrough } from "node:stream";
 vi.mock("cross-spawn", async () => {
   const { cliProbe } = await import("./cli-probe-fixture");
   return {
-    spawn: vi.fn(() => cliProbe("1.0.0")),
+    spawn: vi.fn(() => cliProbe("2.1.283 (Claude Code)")),
     default: vi.fn(() => {
       const proc = new EventEmitter();
       const stdin = { write: vi.fn(), end: vi.fn() };
@@ -40,7 +40,7 @@ vi.mock("cross-spawn", async () => {
 });
 
 vi.mock("node:child_process", () => ({
-  execSync: vi.fn(() => Buffer.from("1.0.0")),
+  execSync: vi.fn(() => Buffer.from("2.1.283 (Claude Code)")),
 }));
 
 const { MockAssistantMessageEventStream } = vi.hoisted(() => {
@@ -72,8 +72,8 @@ import { resetCliProcessesForTests } from "../src/cli-process";
 const model = {
   id: "claude-haiku-4-5",
   name: "Claude Haiku 4.5",
-  api: "pi-claude-cli",
-  provider: "pi-claude-cli",
+  api: "pi-claude-tether",
+  provider: "pi-claude-tether",
   reasoning: true,
   input: "text",
   cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
@@ -181,7 +181,11 @@ describe("a result the CLI spent on its own queued prompt", () => {
     proc.emit("close", 0, null);
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(doneEvent()).toBeDefined();
+    const events = MockAssistantMessageEventStream.mock.instances[0]._events;
+    expect(doneEvent()).toBeUndefined();
+    expect(events.find((e: any) => e.type === "error").error.stopReason).toBe(
+      "error",
+    );
   });
 
   it("keeps waiting through however many queued prompts the CLI drains first (no count cap)", async () => {

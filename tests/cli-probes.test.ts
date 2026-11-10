@@ -63,8 +63,8 @@ import {
 
 const model = {
   id: "claude-haiku-4-5",
-  api: "pi-claude-cli",
-  provider: "pi-claude-cli",
+  api: "pi-claude-tether",
+  provider: "pi-claude-tether",
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as any;
 let home: string;
@@ -88,7 +88,6 @@ beforeEach(() => {
   writeFileSync(binary, "", { mode: 0o700 });
   vi.stubEnv("HOME", home);
   vi.stubEnv("PATH", bin);
-  vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "pi");
   (spawnProbe as any).mockImplementation(() => cliProbe());
 });
 afterEach(() => {
@@ -220,9 +219,9 @@ describe("CLI probes without adapter deadlines", () => {
     expect(spawnProbe).toHaveBeenCalledTimes(2);
     expect(warned.filter((w) => w.includes("9.9.9"))).toHaveLength(1);
   });
-  it("PI_CLAUDE_CLI_STRICT_VERSION=1 refuses a newer-than-tested CLI", async () => {
+  it("PI_CLAUDE_TETHER_STRICT_VERSION=1 refuses a newer-than-tested CLI", async () => {
     resetCliVersionWarningsForTests();
-    vi.stubEnv("PI_CLAUDE_CLI_STRICT_VERSION", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_STRICT_VERSION", "1");
     (spawnProbe as any).mockImplementationOnce(() =>
       cliProbe("9.9.9 (Claude Code)"),
     );
@@ -274,28 +273,23 @@ describe("CLI probes without adapter deadlines", () => {
       expect(spawnProbe).toHaveBeenCalledTimes(2);
     },
   );
-  it.each(["legacy", "pi"])(
-    "Windows Path-only environment is preserved for presence and probes (%s)",
-    async (mode) => {
-      Object.defineProperty(process, "platform", {
-        ...originalPlatform,
-        value: "win32",
-      });
-      vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", mode);
-      vi.stubEnv("PATH", undefined);
-      vi.stubEnv("Path", join(home, "bin"));
-      vi.stubEnv("PATHEXT", ".EXE;.CMD;.BAT;.COM");
-      writeFileSync(`${binary}.CMD`, "", { mode: 0o600 });
-      validateCliPresence();
-      await verifyContextCli();
-      const env = vi.mocked(spawnProbe).mock.calls[0][2]!.env!;
-      expect(env.Path).toContain(join(home, "bin"));
-      expect(env.PATH).toBeUndefined();
-      if (mode === "pi")
-        expect(env.Path!.split(";")[0]).toContain("node_modules/.bin");
-      expect(vi.mocked(execSync).mock.calls.length).toBe(0);
-    },
-  );
+  it("Windows Path-only environment is preserved for Pi-owned presence and probes", async () => {
+    Object.defineProperty(process, "platform", {
+      ...originalPlatform,
+      value: "win32",
+    });
+    vi.stubEnv("PATH", undefined);
+    vi.stubEnv("Path", join(home, "bin"));
+    vi.stubEnv("PATHEXT", ".EXE;.CMD;.BAT;.COM");
+    writeFileSync(`${binary}.CMD`, "", { mode: 0o600 });
+    validateCliPresence();
+    await verifyContextCli();
+    const env = vi.mocked(spawnProbe).mock.calls[0][2]!.env!;
+    expect(env.Path).toContain(join(home, "bin"));
+    expect(env.PATH).toBeUndefined();
+    expect(env.Path!.split(";")[0]).toContain("node_modules/.bin");
+    expect(vi.mocked(execSync).mock.calls.length).toBe(0);
+  });
 
   it("Windows presence and cache select the .cmd shim before the extensionless npm shim", async () => {
     // Simulated Windows resolver; the process boundary stays mocked on Linux.

@@ -2,15 +2,16 @@
  * Claude account profiles: manual selection plus opt-in failover exhaustion.
  *
  * One Pi process uses exactly one account. The ordered set is declared with
- * PI_CLAUDE_CLI_ACCOUNTS (e.g. "default,b"); the account for this process is
- * chosen with PI_CLAUDE_CLI_ACCOUNT (e.g. a shell alias
- * `pi-b='PI_CLAUDE_CLI_ACCOUNT=b pi'`). Unset means the existing profile.
+ * PI_CLAUDE_TETHER_ACCOUNTS (e.g. "default,b") plus accounts.json UI entries.
+ * Selection follows runtime/session choice, captured launch account, stored
+ * default, then the existing profile. Launch example:
+ * `pi-b='PI_CLAUDE_TETHER_ACCOUNT=b pi'`.
  * "default" is the existing PI_CLAUDE_CONFIG_DIR (no re-login); any other
  * name N resolves to <package-data-dir>/accounts/N/claude-config, where the
  * package data dir comes from src/data-dir.ts, which derives the directory
  * from the installed package name.
  *
- * Automatic failover between accounts is OFF unless PI_CLAUDE_CLI_FAILOVER=1.
+ * Automatic failover between accounts is OFF unless PI_CLAUDE_TETHER_FAILOVER=1.
  * When on, a rejected subscription limit marks that account exhausted until
  * the resetsAt the CLI itself reported, and the request is retried on the
  * next non-exhausted account. The expiry comes only from CLI events; nothing
@@ -21,10 +22,96 @@
  * and the last writer wins.
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { packageDataDir } from "./data-dir.js";
 import { stateDir } from "./session-map.js";
+
+export interface AccountDeclaration {
+  name: string;
+  email?: string;
+  plan?: string;
+  addedAt?: string;
+  pending?: boolean;
+  console?: boolean;
+  sso?: boolean;
+}
+export interface AccountsStore {
+  accounts: AccountDeclaration[];
+  default?: string;
+}
+let sessionSelection: string | undefined;
+let launchSelection: { account: string } | undefined;
+
+/** Capture once before publishing runtime choices to the child environment. */
+export function captureLaunchAccount(): string {
+  launchSelection ??= { account: process.env.PI_CLAUDE_TETHER_ACCOUNT ?? "" };
+  return launchSelection.account;
+}
+
+export function accountsPath(): string {
+  return join(packageDataDir(), "accounts.json");
+}
+
+/** Only our declaration file, never the CLI's credential store. */
+export function readAccounts(): AccountsStore {
+  let body: string;
+  try {
+    body = readFileSync(accountsPath(), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return { accounts: [] };
+    throw error;
+  }
+  const parsed = JSON.parse(body) as AccountsStore;
+  if (!parsed || !Array.isArray(parsed.accounts))
+    throw new Error("Invalid accounts.json: expected accounts array");
+  const seen = new Set<string>();
+  for (const a of parsed.accounts) {
+    if (!a || typeof a.name !== "string")
+      throw new Error("Invalid accounts.json account");
+    checkName(a.name, "accounts.json", a.name);
+    if (seen.has(a.name))
+      throw new Error(`Duplicate accounts.json account ${a.name}`);
+    seen.add(a.name);
+    for (const field of ["pending", "console", "sso"] as const) {
+      if (a[field] !== undefined && typeof a[field] !== "boolean")
+        throw new Error(`Invalid accounts.json ${field}`);
+    }
+    for (const field of ["email", "plan", "addedAt"] as const) {
+      if (a[field] !== undefined && typeof a[field] !== "string")
+        throw new Error(`Invalid accounts.json ${field}`);
+    }
+  }
+  if (parsed.default !== undefined) {
+    if (typeof parsed.default !== "string")
+      throw new Error("Invalid accounts.json default");
+    checkName(parsed.default, "accounts.json default", parsed.default);
+  }
+  return parsed;
+}
+
+/** First UI write preserves the currently declared set, including the implicit legacy default. */
+export function accountsForUpdate(): AccountsStore {
+  const store = readAccounts();
+  if (!existsSync(accountsPath()))
+    store.accounts = parseAccountSet().map((name) => ({ name }));
+  return store;
+}
+
+/** Atomic declaration update; no credential or cached authentication state. */
+export function writeAccounts(store: AccountsStore): void {
+  mkdirSync(packageDataDir(), { recursive: true, mode: 0o700 });
+  const tmp = `${accountsPath()}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(store, null, 2) + "\n", { mode: 0o600 });
+  renameSync(tmp, accountsPath());
+}
 
 /** A separate Claude Code login and plugin store for Pi-owned turns. Never load ~/.claude. */
 export const PI_CLAUDE_CONFIG_DIR = join(packageDataDir(), "claude-config");
@@ -32,7 +119,7 @@ export const PI_CLAUDE_CONFIG_DIR = join(packageDataDir(), "claude-config");
 /** Reserved name for the existing profile. Every other name is a subdirectory. */
 export const DEFAULT_ACCOUNT = "default";
 
-function checkName(name: string, variable: string, raw: string): void {
+export function checkName(name: string, variable: string, raw: string): void {
   if (
     name.length === 0 ||
     name === "." ||
@@ -43,49 +130,101 @@ function checkName(name: string, variable: string, raw: string): void {
     !/^[A-Za-z0-9._-]+$/.test(name)
   ) {
     throw new Error(
-      `[pi-claude-cli] Invalid account name ${JSON.stringify(name)} in ${variable}=${JSON.stringify(raw)}: ` +
+      `[pi-claude-tether] Invalid account name ${JSON.stringify(name)} in ${variable}=${JSON.stringify(raw)}: ` +
         `names must be non-empty, contain no path separators, and match [A-Za-z0-9._-].`,
     );
   }
 }
 
 /**
- * The declared ordered account set. Unset or blank means just the default
- * profile, which keeps single-account behavior byte-identical to before.
+ * Env declarations first, then file entries. Without the file, an unset or
+ * blank env retains the implicit legacy default exactly. Once present, the
+ * file owns UI declarations, including an explicitly empty set.
  */
 export function parseAccountSet(
-  raw: string | undefined = process.env.PI_CLAUDE_CLI_ACCOUNTS,
+  raw: string | undefined = process.env.PI_CLAUDE_TETHER_ACCOUNTS,
 ): string[] {
   const names = (raw ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  const deduped = [...new Set(names.length > 0 ? names : [DEFAULT_ACCOUNT])];
+  const deduped = [
+    ...new Set(
+      names.length > 0
+        ? names
+        : existsSync(accountsPath())
+          ? []
+          : [DEFAULT_ACCOUNT],
+    ),
+  ];
   for (const name of deduped) {
-    checkName(name, "PI_CLAUDE_CLI_ACCOUNTS", raw ?? "");
+    checkName(name, "PI_CLAUDE_TETHER_ACCOUNTS", raw ?? "");
   }
-  return deduped;
+  return [
+    ...new Set([...deduped, ...readAccounts().accounts.map((a) => a.name)]),
+  ];
 }
 
 /**
- * The account this Pi process uses. Unset means the default profile.
+ * Runtime/session choice, then captured launch, stored default, legacy default.
  * A named account must be a member of the declared set; anything else is a
  * configuration error, failed loudly rather than guessed.
  */
 export function selectedAccountName(
   set: string[] = parseAccountSet(),
-  raw: string | undefined = process.env.PI_CLAUDE_CLI_ACCOUNT,
+  raw: string | undefined = launchSelection?.account ??
+    process.env.PI_CLAUDE_TETHER_ACCOUNT,
 ): string {
-  const name = (raw ?? "").trim();
-  if (name.length === 0) return DEFAULT_ACCOUNT;
-  checkName(name, "PI_CLAUDE_CLI_ACCOUNT", raw ?? "");
+  const choice = sessionSelection || raw?.trim() || readAccounts().default;
+  const name = choice || DEFAULT_ACCOUNT;
+  if (isAccountPending(name))
+    throw new Error(
+      `Account ${name} needs /claude-accounts login ${name} before use`,
+    );
+  if (!choice && !existsSync(accountsPath())) return DEFAULT_ACCOUNT;
+  checkName(name, "PI_CLAUDE_TETHER_ACCOUNT", raw ?? "");
   if (!set.includes(name)) {
     throw new Error(
-      `[pi-claude-cli] PI_CLAUDE_CLI_ACCOUNT=${JSON.stringify(name)} is not in ` +
-        `PI_CLAUDE_CLI_ACCOUNTS=${JSON.stringify(set.join(","))}: declare it first.`,
+      `[pi-claude-tether] PI_CLAUDE_TETHER_ACCOUNT=${JSON.stringify(name)} is not in ` +
+        `PI_CLAUDE_TETHER_ACCOUNTS=${JSON.stringify(set.join(","))}: declare it first.`,
     );
   }
   return name;
+}
+
+/**
+ * Make `name` the account this Pi process uses from its next provider call.
+ *
+ * Runtime selection overrides the captured launch environment. Publish the
+ * effective selection for child Pi sessions, but never read that publication
+ * back as the launch choice. The session custom entry owns restoration.
+ * The name must be declared and verified.
+ * Warm CLI processes never cross accounts (the account is
+ * part of the launch signature), so the next turn spawns on the new one.
+ */
+/** Restore a session's intent even if it now needs login; never retain a prior session's choice. */
+export function restoreAccount(
+  name: string,
+  set: string[] = parseAccountSet(),
+): string {
+  captureLaunchAccount();
+  sessionSelection = name.trim() || undefined;
+  const selected = selectedAccountName(set);
+  process.env.PI_CLAUDE_TETHER_ACCOUNT = selected;
+  return selected;
+}
+
+export function selectAccount(
+  name: string,
+  set: string[] = parseAccountSet(),
+): string {
+  const previous = sessionSelection;
+  try {
+    return restoreAccount(name, set);
+  } catch (error) {
+    sessionSelection = previous;
+    throw error;
+  }
 }
 
 /**
@@ -106,7 +245,7 @@ export function isSingleDefaultAccountSet(set: string[]): boolean {
  * Only the exact value "1" enables failover; other values leave it disabled.
  */
 export function failoverEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (env.PI_CLAUDE_CLI_FAILOVER ?? "") === "1";
+  return (env.PI_CLAUDE_TETHER_FAILOVER ?? "") === "1";
 }
 
 /** The CLAUDE_CONFIG_DIR a spawn or probe for this account must use. */
@@ -184,6 +323,12 @@ export function accountResetTimes(
  * every account was tried, the selection is empty. Undefined when every
  * account is exhausted or already tried.
  */
+export function isAccountPending(name: string): boolean {
+  return readAccounts().accounts.some(
+    (a) => a.name === name && a.pending === true,
+  );
+}
+
 export function selectFailoverAccount(
   set: string[],
   exclude?: string,
@@ -193,6 +338,7 @@ export function selectFailoverAccount(
   return set.find(
     (name) =>
       name !== exclude &&
+      !isAccountPending(name) &&
       !(attempted?.has(name) ?? false) &&
       !isAccountExhausted(name, nowSeconds),
   );

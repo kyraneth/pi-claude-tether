@@ -1,211 +1,98 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   mkdtempSync,
   rmSync,
   writeFileSync,
   readFileSync,
   readdirSync,
-  statSync,
-  chmodSync,
+  mkdirSync,
+  existsSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import {
-  getCliSession,
-  setCliSession,
-  clearCliSession,
-  getSystemPrompt,
-  setSystemPrompt,
-  clearSystemPrompt,
-} from "../src/session-map";
+import { stateDir, assertNoLegacySession } from "../src/session-map";
 
-describe("session-map sidecar", () => {
+describe("read-only legacy session guard", () => {
   let dir: string;
-
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "pcc-map-"));
-    process.env.PI_CLAUDE_CLI_STATE_DIR = dir;
+    dir = mkdtempSync(join(tmpdir(), "tether-map-"));
+    vi.stubEnv("PI_CLAUDE_TETHER_STATE_DIR", dir);
   });
-
   afterEach(() => {
-    delete process.env.PI_CLAUDE_CLI_STATE_DIR;
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
+    vi.unstubAllEnvs();
+    rmSync(dir, { recursive: true, force: true });
   });
 
-  it("round-trips a mapping", () => {
-    setCliSession("pi-1", "cli-1");
-    expect(getCliSession("pi-1")).toBe("cli-1");
+  it("resolves the shared state home without creating legacy state", () => {
+    expect(stateDir()).toBe(dir);
+    expect(() => assertNoLegacySession("new-pi")).not.toThrow();
+    expect(readdirSync(dir)).toEqual([]);
+    vi.stubEnv("PI_CLAUDE_TETHER_STATE_DIR", join(dir, "absent"));
+    expect(() => assertNoLegacySession("new-pi")).not.toThrow();
+    expect(existsSync(join(dir, "absent"))).toBe(false);
   });
 
-  it("returns undefined for unknown pi sessions", () => {
-    expect(getCliSession("nope")).toBeUndefined();
-  });
-
-  it("clears a mapping", () => {
-    setCliSession("pi-1", "cli-1");
-    clearCliSession("pi-1");
-    expect(getCliSession("pi-1")).toBeUndefined();
-  });
-
-  it("clearing an absent mapping is a no-op", () => {
-    expect(() => clearCliSession("never-set")).not.toThrow();
-  });
-
-  it("keeps unrelated mappings when one is updated", () => {
-    setCliSession("pi-1", "cli-1");
-    setCliSession("pi-2", "cli-2");
-    setCliSession("pi-1", "cli-1b");
-    expect(getCliSession("pi-1")).toBe("cli-1b");
-    expect(getCliSession("pi-2")).toBe("cli-2");
-  });
-
-  it("treats a corrupt sidecar as empty rather than throwing", () => {
-    writeFileSync(join(dir, "session-map.json"), "{not json");
-    expect(getCliSession("pi-1")).toBeUndefined();
-    // And a write recovers the file.
-    setCliSession("pi-1", "cli-1");
-    expect(getCliSession("pi-1")).toBe("cli-1");
-  });
-
-  it("treats a non-object sidecar as empty", () => {
-    writeFileSync(join(dir, "session-map.json"), JSON.stringify(["array"]));
-    expect(getCliSession("pi-1")).toBeUndefined();
-  });
-
-  it("creates the state directory on first write", () => {
-    process.env.PI_CLAUDE_CLI_STATE_DIR = join(dir, "nested", "deeper");
-    setCliSession("pi-1", "cli-1");
-    expect(getCliSession("pi-1")).toBe("cli-1");
-    const raw = readFileSync(
-      join(dir, "nested", "deeper", "session-map.json"),
-      "utf-8",
-    );
-    expect(JSON.parse(raw)["pi-1"]).toBe("cli-1");
-  });
-
-  describe("account pinning", () => {
-    it("records and matches the minting account", () => {
-      setCliSession("pi-1", "cli-1", "b");
-      expect(getCliSession("pi-1", "b")).toBe("cli-1");
-      expect(getCliSession("pi-1", "default")).toBeUndefined();
-      // An account-agnostic read still returns any recorded pairing.
-      expect(getCliSession("pi-1")).toBe("cli-1");
-    });
-
-    it("ignores a legacy string entry on a pinned read, then records", () => {
-      // Entries written before account recording are plain strings. A
-      // pinned read misses (the turn reimports once); the reimport then
-      // records the account.
-      writeFileSync(
-        join(dir, "session-map.json"),
-        JSON.stringify({ "pi-legacy": "cli-old" }),
+  it.each(["cli-old", { cli: "cli-old", account: "other" }, null, ""])(
+    "rejects any current Pi mapping unchanged: %j",
+    (mapping) => {
+      const path = join(dir, "session-map.json");
+      const original = JSON.stringify({
+        "pi-current": mapping,
+        other: "cli-other",
+      });
+      writeFileSync(path, original);
+      expect(() => assertNoLegacySession("pi-current")).toThrow(
+        /fresh Pi session/,
       );
-      expect(getCliSession("pi-legacy", "default")).toBeUndefined();
-      expect(getCliSession("pi-legacy")).toBe("cli-old");
-      setCliSession("pi-legacy", "cli-new", "default");
-      expect(getCliSession("pi-legacy", "default")).toBe("cli-new");
-      expect(getCliSession("pi-legacy", "b")).toBeUndefined();
-    });
+      expect(readFileSync(path, "utf8")).toBe(original);
+      expect(readdirSync(dir)).toEqual(["session-map.json"]);
+    },
+  );
 
-    it("overwrites across accounts without leaking the old pairing", () => {
-      setCliSession("pi-1", "cli-a", "default");
-      setCliSession("pi-1", "cli-b", "b");
-      expect(getCliSession("pi-1", "default")).toBeUndefined();
-      expect(getCliSession("pi-1", "b")).toBe("cli-b");
-    });
+  it("does not reject or modify another Pi session's mapping", () => {
+    const path = join(dir, "session-map.json");
+    const original = JSON.stringify({ other: "cli-other" });
+    writeFileSync(path, original);
+    expect(() => assertNoLegacySession("pi-current")).not.toThrow();
+    expect(readFileSync(path, "utf8")).toBe(original);
   });
 
-  describe("ephemeral mode (PI_CLAUDE_CLI_EPHEMERAL)", () => {
-    afterEach(() => {
-      delete process.env.PI_CLAUDE_CLI_EPHEMERAL;
-    });
-
-    it("records no pairing and no prompt, and writes nothing to disk", () => {
-      // A one-shot has no next turn: anything written here is never read.
-      process.env.PI_CLAUDE_CLI_EPHEMERAL = "1";
-      setCliSession("pi-eph", "cli-eph");
-      setSystemPrompt("cli-eph", "PROMPT");
-      expect(getCliSession("pi-eph")).toBeUndefined();
-      expect(getSystemPrompt("cli-eph")).toBeUndefined();
-      expect(readdirSync(dir)).toEqual([]);
-    });
-
-    it("leaves earlier state readable and clearable", () => {
-      setCliSession("pi-1", "cli-1");
-      setSystemPrompt("cli-1", "ONE");
-      process.env.PI_CLAUDE_CLI_EPHEMERAL = "true";
-      setCliSession("pi-1", "cli-other");
-      expect(getCliSession("pi-1")).toBe("cli-1");
-      expect(getSystemPrompt("cli-1")).toBe("ONE");
-      clearCliSession("pi-1");
-      clearSystemPrompt("cli-1");
-      expect(getCliSession("pi-1")).toBeUndefined();
-      expect(getSystemPrompt("cli-1")).toBeUndefined();
-    });
-
-    it("records as usual when set to a falsy value", () => {
-      process.env.PI_CLAUDE_CLI_EPHEMERAL = "0";
-      setCliSession("pi-1", "cli-1");
-      setSystemPrompt("cli-1", "ONE");
-      expect(getCliSession("pi-1")).toBe("cli-1");
-      expect(getSystemPrompt("cli-1")).toBe("ONE");
-    });
+  it("rejects an orphaned saved prompt keyed by the current Pi id, unchanged", () => {
+    mkdirSync(join(dir, "sysprompt"));
+    const path = join(dir, "sysprompt", "pi-current.txt");
+    writeFileSync(path, "old prompt");
+    expect(() => assertNoLegacySession("pi-current")).toThrow(/sysprompt/);
+    expect(readFileSync(path, "utf8")).toBe("old prompt");
+    expect(() => assertNoLegacySession("other")).not.toThrow();
   });
 
-  describe("stored system prompt", () => {
-    it("round-trips a prompt verbatim", () => {
-      // Byte-exactness is the whole point: a resumed spawn re-sends these
-      // bytes, and any drift re-bills the transcript as cache write.
-      const prompt = "line one\n\nline two \u2014 with unicode\n";
-      setSystemPrompt("cli-1", prompt);
-      expect(getSystemPrompt("cli-1")).toBe(prompt);
-    });
+  it("reports corrupt JSON clearly instead of repairing or ignoring it", () => {
+    const path = join(dir, "session-map.json");
+    writeFileSync(path, "{not json");
+    expect(() => assertNoLegacySession("pi-current")).toThrow(
+      /Cannot validate.*session-map/,
+    );
+    expect(readFileSync(path, "utf8")).toBe("{not json");
+  });
 
-    it("restricts new and previously permissive prompt files to owner access", () => {
-      setSystemPrompt("cli-1", "ONE");
-      const path = join(dir, "sysprompt", "cli-1.txt");
-      expect(statSync(path).mode & 0o777).toBe(0o600);
-      chmodSync(path, 0o644);
-      setSystemPrompt("cli-1", "TWO");
-      expect(statSync(path).mode & 0o777).toBe(0o600);
-    });
+  it.each([null, [], "not a map", 42, false])(
+    "rejects invalid sidecar shapes unchanged: %j",
+    (value) => {
+      const path = join(dir, "session-map.json");
+      const original = JSON.stringify(value);
+      writeFileSync(path, original);
+      expect(() => assertNoLegacySession("pi-current")).toThrow(
+        /Cannot validate.*session-map/,
+      );
+      expect(readFileSync(path, "utf8")).toBe(original);
+    },
+  );
 
-    it("returns undefined for a session recorded before prompts were stored", () => {
-      expect(getSystemPrompt("legacy-session")).toBeUndefined();
-    });
-
-    it("keeps prompts per session", () => {
-      setSystemPrompt("cli-1", "ONE");
-      setSystemPrompt("cli-2", "TWO");
-      expect(getSystemPrompt("cli-1")).toBe("ONE");
-      expect(getSystemPrompt("cli-2")).toBe("TWO");
-    });
-
-    it("clears a prompt, and clearing an absent one is a no-op", () => {
-      setSystemPrompt("cli-1", "ONE");
-      clearSystemPrompt("cli-1");
-      expect(getSystemPrompt("cli-1")).toBeUndefined();
-      expect(() => clearSystemPrompt("never-set")).not.toThrow();
-    });
-
-    it("creates the nested directory on first write", () => {
-      process.env.PI_CLAUDE_CLI_STATE_DIR = join(dir, "fresh");
-      setSystemPrompt("cli-1", "ONE");
-      expect(
-        readFileSync(join(dir, "fresh", "sysprompt", "cli-1.txt"), "utf-8"),
-      ).toBe("ONE");
-    });
-
-    it("does not throw when the state dir is unwritable", () => {
-      // Degrades to rebuilding the prompt, which is correct but less cacheable.
-      writeFileSync(join(dir, "blocker"), "not a directory");
-      process.env.PI_CLAUDE_CLI_STATE_DIR = join(dir, "blocker");
-      expect(() => setSystemPrompt("cli-1", "ONE")).not.toThrow();
-      expect(getSystemPrompt("cli-1")).toBeUndefined();
-    });
+  it("reports unreadable map state instead of treating it as absent", () => {
+    mkdirSync(join(dir, "session-map.json"));
+    expect(() => assertNoLegacySession("pi-current")).toThrow(
+      /Cannot validate.*session-map/,
+    );
+    expect(readdirSync(join(dir, "session-map.json"))).toEqual([]);
   });
 });

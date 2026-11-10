@@ -2,14 +2,8 @@ import { createLifecycleRevision } from "pi-tether-core/lifecycle";
 /**
  * One Claude CLI process that outlives a single pi call.
  *
- * Before 0.7.0 a process lived exactly one pi call: spawn, one user message,
- * read until `result`, kill. Every custom (handoff) tool call and every user
- * turn therefore started a fresh `claude -p --resume`, and each fresh process
- * rebuilt its system prompt — including Claude Code's git snapshot — so any
- * commit, branch rename or untracked file between two processes re-billed the
- * whole context as cache write (src/handoff-broker.ts has the numbers).
- *
- * A CliProcess instead stays alive:
+ * Pi owns the transcript; this process caches the acknowledged prefix.
+ * A CliProcess stays alive: * A CliProcess instead stays alive:
  * - through a handoff: pi's stream ends at message_stop so pi can run the
  *   tool, the CLI blocks on the proxied `tools/call`, and the next pi call
  *   attaches to the same process and answers it;
@@ -26,7 +20,10 @@ import type { ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { parseLine } from "./stream-parser.js";
-import { matchesDerivativeImages, receiptImageHeader } from "./receipt-image.js";
+import {
+  matchesDerivativeImages,
+  receiptImageHeader,
+} from "./receipt-image.js";
 import { errorTruncation } from "./receipt-error.js";
 import { removeSessionMcpConfig } from "./mcp-config.js";
 import { handleControlRequest } from "./control-handler.js";
@@ -35,7 +32,6 @@ import {
   sendInterrupt,
   forceKillProcess,
 } from "./process-manager.js";
-import { createTaskTracker } from "./task-tracker.js";
 import {
   registerHandoffTarget,
   unregisterHandoffTarget,
@@ -45,7 +41,11 @@ import {
   type HandoffTarget,
 } from "./handoff-broker.js";
 import type { NdjsonMessage } from "./types.js";
-import type { HandoffReceiptMismatch, ReceiptContentMetadata, RequestLedger } from "./request-ledger.js";
+import type {
+  HandoffReceiptMismatch,
+  ReceiptContentMetadata,
+  RequestLedger,
+} from "./request-ledger.js";
 import {
   thinkingControls,
   type CliThinking,
@@ -148,17 +148,24 @@ let controlSeq = 0;
 const liveProcesses = new Set<CliProcess>();
 const lifecycleRevision = createLifecycleRevision();
 /** A provider call cannot outlive a lifecycle invalidation, even between spawns. */
-export function getCliLifecycleRevision(): number { return lifecycleRevision.current(); }
+export function getCliLifecycleRevision(): number {
+  return lifecycleRevision.current();
+}
 
 /** MCP and Anthropic spell text/image blocks differently; strict equality runs first. */
 function canonicalHandoffContent(content: any): any[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
   if (!Array.isArray(content)) return [content];
   if (!content.length) return [{ type: "text", text: "" }];
-  return content.map(block => {
+  return content.map((block) => {
     if (block?.type === "text") return { type: "text", text: block.text };
-    if (block?.type === "image") return { type: "image", data: block.data ?? block.source?.data,
-      mimeType: block.mimeType ?? block.source?.media_type, sourceType: block.source?.type ?? "base64" };
+    if (block?.type === "image")
+      return {
+        type: "image",
+        data: block.data ?? block.source?.data,
+        mimeType: block.mimeType ?? block.source?.media_type,
+        sourceType: block.source?.type ?? "base64",
+      };
     return block;
   });
 }
@@ -168,7 +175,12 @@ function canonicalHandoffContent(content: any): any[] {
  * body; trimming successes, multi-block results or images is not qualified.
  */
 function matchesTrimmedErrorEcho(result: HandoffResult, echo: any): boolean {
-  if (!result.isError || typeof echo !== "string" || result.content.length !== 1) return false;
+  if (
+    !result.isError ||
+    typeof echo !== "string" ||
+    result.content.length !== 1
+  )
+    return false;
   const block = result.content[0];
   if (block.type !== "text") return false;
   const trimmed = block.text.trim();
@@ -181,36 +193,76 @@ function matchesTrimmedErrorEcho(result: HandoffResult, echo: any): boolean {
  * an empty trimmed placeholder is not a receipt.
  */
 function matchesFlattenedErrorEcho(result: HandoffResult, echo: any): boolean {
-  if (!result.isError || typeof echo !== "string" || result.content.length < 2 ||
-      !result.content.every(block => block.type === "text" && typeof block.text === "string")) return false;
-  const joined = result.content.map(block => (block as { text: string }).text).join("\n");
+  if (
+    !result.isError ||
+    typeof echo !== "string" ||
+    result.content.length < 2 ||
+    !result.content.every(
+      (block) => block.type === "text" && typeof block.text === "string",
+    )
+  )
+    return false;
+  const joined = result.content
+    .map((block) => (block as { text: string }).text)
+    .join("\n");
   if (echo === joined) return true;
   const trimmed = joined.trim();
   return trimmed.length > 0 && echo === trimmed;
 }
 
 /** Body-free diagnostics; hash full representations, never log a prefix/sample. */
-function receiptMetadata(content: any, isError: boolean): ReceiptContentMetadata {
+function receiptMetadata(
+  content: any,
+  isError: boolean,
+): ReceiptContentMetadata {
   const canonical = canonicalHandoffContent(content);
-  const text = canonical.filter(block => block?.type === "text" && typeof block.text === "string")
-    .map(block => block.text);
+  const text = canonical
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text);
   const raw = JSON.stringify(content) ?? "undefined";
   const encoded = JSON.stringify(canonical);
-  const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  const hash = (value: string) =>
+    createHash("sha256").update(value).digest("hex");
   return {
-    representation: typeof content === "string" ? "string" : Array.isArray(content) ? "blocks" : "other",
-    blockKinds: canonical.map(block => block?.type === "text" ? "text" : block?.type === "image" ? "image" : "other"),
-    images: canonical.flatMap((block, blockIndex) => block?.type === "image" ? [{
-      blockIndex,
-      declaredMediaType: (["image/png", "image/jpeg", "image/webp", "image/gif"] as const)
-        .find(media => media === block.mimeType) ?? "other",
-      header: receiptImageHeader(block),
-    }] : []),
+    representation:
+      typeof content === "string"
+        ? "string"
+        : Array.isArray(content)
+          ? "blocks"
+          : "other",
+    blockKinds: canonical.map((block) =>
+      block?.type === "text"
+        ? "text"
+        : block?.type === "image"
+          ? "image"
+          : "other",
+    ),
+    images: canonical.flatMap((block, blockIndex) =>
+      block?.type === "image"
+        ? [
+            {
+              blockIndex,
+              declaredMediaType:
+                (
+                  [
+                    "image/png",
+                    "image/jpeg",
+                    "image/webp",
+                    "image/gif",
+                  ] as const
+                ).find((media) => media === block.mimeType) ?? "other",
+              header: receiptImageHeader(block),
+            },
+          ]
+        : [],
+    ),
     isError,
     textChars: text.reduce((sum, value) => sum + value.length, 0),
     textBytes: text.reduce((sum, value) => sum + Buffer.byteLength(value), 0),
-    rawBytes: Buffer.byteLength(raw), rawSha256: hash(raw),
-    canonicalBytes: Buffer.byteLength(encoded), canonicalSha256: hash(encoded),
+    rawBytes: Buffer.byteLength(raw),
+    rawSha256: hash(raw),
+    canonicalBytes: Buffer.byteLength(encoded),
+    canonicalSha256: hash(encoded),
   };
 }
 
@@ -241,7 +293,9 @@ export class CliProcess implements HandoffTarget {
   private cacheTouchedAt: number | undefined;
   cacheTtlMs = DEFAULT_CACHE_TTL_MS;
   get cacheExpiresAt(): number | undefined {
-    return this.cacheTouchedAt === undefined ? undefined : this.cacheTouchedAt + this.cacheTtlMs;
+    return this.cacheTouchedAt === undefined
+      ? undefined
+      : this.cacheTouchedAt + this.cacheTtlMs;
   }
 
   /** Mid-turn users written to stdin but not yet confirmed by a CLI result. */
@@ -267,9 +321,7 @@ export class CliProcess implements HandoffTarget {
    * Shared across episodes: call markers whose results may arrive later,
    * mapped to the tool each one named so its result marker can name it too.
    */
-  readonly markedTools = new Map<string, string>();
   /** Shared across episodes: sub-agents live in the process, not the call. */
-  readonly taskTracker = createTaskTracker();
 
   /**
    * `result.modelUsage` is cumulative for the process. Per-turn spend is the
@@ -290,8 +342,13 @@ export class CliProcess implements HandoffTarget {
   /** pi answered, `tools/call` has not arrived yet. */
   private ready = new Map<string, HandoffResult>();
   /** Socket acceptance is not CLI consumption: wait for its tool_result echo. */
-  private deliveryWaiters = new Map<string, { result: HandoffResult; settle: (delivered: boolean) => void }>();
-  get hasUnconfirmedHandoffResults(): boolean { return this.deliveryWaiters.size > 0; }
+  private deliveryWaiters = new Map<
+    string,
+    { result: HandoffResult; settle: (delivered: boolean) => void }
+  >();
+  get hasUnconfirmedHandoffResults(): boolean {
+    return this.deliveryWaiters.size > 0;
+  }
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private closeWaiters: Array<() => void> = [];
   private onExitHandlers: Array<(code: number | null) => void> = [];
@@ -375,8 +432,12 @@ export class CliProcess implements HandoffTarget {
   private observeCache(msg: NdjsonMessage): void {
     if ((msg as any).type !== "stream_event") return;
     const event = (msg as any).event;
-    const usage = event?.type === "message_start" ? event.message?.usage
-      : event?.type === "message_delta" ? event.usage : undefined;
+    const usage =
+      event?.type === "message_start"
+        ? event.message?.usage
+        : event?.type === "message_delta"
+          ? event.usage
+          : undefined;
     if (!usage) return;
     // Reads and writes both refresh the cached prefix from this request on.
     if (event.type === "message_start") this.cacheTouchedAt = Date.now();
@@ -410,7 +471,8 @@ export class CliProcess implements HandoffTarget {
 
   /** Called only after the preceding turn's result: a real independent user. */
   writeSteer(blocks: any[]): void {
-    if (this.turnActive) throw new Error("Steering requires a settled CLI turn");
+    if (this.turnActive)
+      throw new Error("Steering requires a settled CLI turn");
     const uuid = randomUUID();
     try {
       this.pendingSteers.add(uuid);
@@ -425,35 +487,65 @@ export class CliProcess implements HandoffTarget {
 
   /** Process-owned acknowledgements run once at stdout ingress, before hooks. */
   confirmUserEcho(message: any): void {
-    if (message.type !== "user" || message.message?.role !== "user" || message.parent_tool_use_id) return;
-    if (typeof message.uuid === "string") this.pendingSteers.delete(message.uuid);
-    for (const block of Array.isArray(message.message.content) ? message.message.content : []) {
+    if (
+      message.type !== "user" ||
+      message.message?.role !== "user" ||
+      message.parent_tool_use_id
+    )
+      return;
+    if (typeof message.uuid === "string")
+      this.pendingSteers.delete(message.uuid);
+    for (const block of Array.isArray(message.message.content)
+      ? message.message.content
+      : []) {
       if (block?.type !== "tool_result") continue;
       const receipt = this.deliveryWaiters.get(block.tool_use_id);
       if (!receipt) continue;
       const sameError = !!block.is_error === !!receipt.result.isError;
       const expectedContent = canonicalHandoffContent(receipt.result.content);
       const observedContent = canonicalHandoffContent(block.content);
-      const sameContent = JSON.stringify(observedContent) === JSON.stringify(expectedContent);
-      const truncation = sameError && !sameContent ? errorTruncation(receipt.result, block.content) : undefined;
-      if (!sameError || (!sameContent &&
+      const sameContent =
+        JSON.stringify(observedContent) === JSON.stringify(expectedContent);
+      const truncation =
+        sameError && !sameContent
+          ? errorTruncation(receipt.result, block.content)
+          : undefined;
+      if (
+        !sameError ||
+        (!sameContent &&
           !matchesTrimmedErrorEcho(receipt.result, block.content) &&
           !matchesFlattenedErrorEcho(receipt.result, block.content) &&
           !truncation &&
-          !matchesDerivativeImages(expectedContent, observedContent))) {
+          !matchesDerivativeImages(expectedContent, observedContent))
+      ) {
         // A same-ID generic denial is not the Pi result, even for isError=true.
-        const expected = receiptMetadata(receipt.result.content, !!receipt.result.isError);
+        const expected = receiptMetadata(
+          receipt.result.content,
+          !!receipt.result.isError,
+        );
         const observed = receiptMetadata(block.content, !!block.is_error);
         const kinds: HandoffReceiptMismatch["kinds"] = [];
         if (!sameError) kinds.push("error_status");
-        if (expected.representation !== observed.representation ||
-          JSON.stringify(expected.blockKinds) !== JSON.stringify(observed.blockKinds)) kinds.push("representation");
-        if (expected.canonicalBytes !== observed.canonicalBytes) kinds.push("content_length");
-        if (expected.canonicalSha256 !== observed.canonicalSha256) kinds.push("content_hash");
-        void this.retire(["handoff_receipt_mismatch"], { toolUseId: block.tool_use_id, kinds, expected, observed });
+        if (
+          expected.representation !== observed.representation ||
+          JSON.stringify(expected.blockKinds) !==
+            JSON.stringify(observed.blockKinds)
+        )
+          kinds.push("representation");
+        if (expected.canonicalBytes !== observed.canonicalBytes)
+          kinds.push("content_length");
+        if (expected.canonicalSha256 !== observed.canonicalSha256)
+          kinds.push("content_hash");
+        void this.retire(["handoff_receipt_mismatch"], {
+          toolUseId: block.tool_use_id,
+          kinds,
+          expected,
+          observed,
+        });
         return;
       }
-      if (truncation) this.ledger?.toolResultLoss(block.tool_use_id, truncation);
+      if (truncation)
+        this.ledger?.toolResultLoss(block.tool_use_id, truncation);
       this.deliveryWaiters.delete(block.tool_use_id);
       receipt.settle(true);
     }
@@ -573,8 +665,13 @@ export class CliProcess implements HandoffTarget {
   }
 
   /** Deliver pi's result. Answers the CLI now or when its call arrives. */
-  deliverHandoffResult(toolUseId: string, result: HandoffResult): Promise<boolean> {
-    const receipt = new Promise<boolean>(settle => this.deliveryWaiters.set(toolUseId, { result, settle }));
+  deliverHandoffResult(
+    toolUseId: string,
+    result: HandoffResult,
+  ): Promise<boolean> {
+    const receipt = new Promise<boolean>((settle) =>
+      this.deliveryWaiters.set(toolUseId, { result, settle }),
+    );
     const call = this.pending.get(toolUseId);
     if (call) {
       this.pending.delete(toolUseId);
@@ -653,7 +750,10 @@ export class CliProcess implements HandoffTarget {
    * with synthetic filler). Resolves once the process has closed or been
    * force-killed.
    */
-  retire(reasons: string[] = ["retire"], handoffReceiptMismatch?: HandoffReceiptMismatch): Promise<void> {
+  retire(
+    reasons: string[] = ["retire"],
+    handoffReceiptMismatch?: HandoffReceiptMismatch,
+  ): Promise<void> {
     if (this.retired) return this.retirement ?? this.waitClosed();
     this.handoffReceiptMismatch = handoffReceiptMismatch;
     this.retired = true;
@@ -697,7 +797,7 @@ export class CliProcess implements HandoffTarget {
     } else {
       endThenKill();
     }
-    return this.retirement = settled;
+    return (this.retirement = settled);
   }
 
   private waitClosed(): Promise<void> {

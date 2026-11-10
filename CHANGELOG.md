@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.12.0 — 2026-11-10
+
+- New Claude models without waiting for a Pi release: models Claude Code's own catalog offers (for example Fable 5.2 on launch day) are added to `/model` next to Pi's built-in list, and a running Pi picks them up after the turn that refreshed the catalog.
+- Complete `/claude-accounts` management: `add`/`login` drive the official CLI's URL-and-paste-code flow, `status` shows auth and age-labelled ledger observations, `switch --default` persists future-session selection, `remove` optionally delegates logout or confirms directory deletion, and `doctor` checks CLI/profile health without reading credentials. Failed adds remain visible as pending declarations but cannot receive turns or failover until verified. Runtime/session switching overrides the launch selection and is restored on resume; environment declarations are merged with the package's `accounts.json` UI store.
+- Tested with Claude Code 2.1.321, the first CLI offering Fable 5.2.
+- Clean provider/API rename to `pi-claude-tether` and environment prefix rename to `PI_CLAUDE_TETHER_`. No compatibility alias and no old environment-variable fallback. Old exports produce a migration warning rather than controlling execution.
+- Removed CLI-owned legacy context mode. Pi owns prompt, tools, history and compaction unconditionally; native Claude tools cannot be enabled through a context switch. Old sessions require explicit migration or a fresh session, not silent fallback.
+
+### 0.12.0 migration
+
+Update any host integrations that reference the old provider first, then update settings and shell exports once, and restart open Claude tabs. This release does not edit settings, shell files, credentials or account directories automatically.
+
+In `~/.pi/agent/settings.json`:
+
+- In `enabledModels`, replace `pi-claude-cli/claude-opus-5-5`, `pi-claude-cli/claude-sonnet-5-5` and `pi-claude-cli/claude-haiku-5-5` with `pi-claude-tether/claude-opus-5-5`, `pi-claude-tether/claude-sonnet-5-5` and `pi-claude-tether/claude-haiku-5-5`. Apply the same provider-prefix replacement to any other scoped Claude entries you added.
+- Rename the keys `compaction.modelOverrides["pi-claude-cli/claude-opus-5-5"]`, `compaction.modelOverrides["pi-claude-cli/claude-sonnet-5-5"]` and `compaction.modelOverrides["pi-claude-cli/claude-haiku-5-5"]` to their `pi-claude-tether/…` equivalents. Preserve each override object, including `reserveTokens`.
+- If set, migrate `defaultProvider: "pi-claude-cli"` to `"pi-claude-tether"`. Keep model IDs unchanged.
+
+In `~/.bashrc`, replace existing account/failover exports with:
+
+```bash
+export PI_CLAUDE_TETHER_ACCOUNTS="${PI_CLAUDE_TETHER_ACCOUNTS:-default,b}"
+export PI_CLAUDE_TETHER_FAILOVER="${PI_CLAUDE_TETHER_FAILOVER:-1}"
+```
+
+Remove their old `PI_CLAUDE_CLI_ACCOUNTS` / `PI_CLAUDE_CLI_FAILOVER` definitions and unset old variables in existing shells (or start a new shell). For any optional exports, replace the `PI_CLAUDE_CLI_` prefix with `PI_CLAUDE_TETHER_` for these supported suffixes: `ACCOUNT`, `ACCOUNTS`, `FAILOVER`, `ALLOW_USAGE_CREDITS`, `HANDOFF_PROXY`, `HANDOFF_WAIT_MS`, `KEEPALIVE_MS`, `SETTINGS`, `STATE_DIR`, `STRICT_VERSION`, `THINKING_DISPLAY`, `TIMEOUT_MS`. No old variable is read as configuration. Remove the old `CONTEXT` switch instead of renaming it; there is no legacy mode to select. Remove the legacy-only `PI_CLAUDE_CLI_SYSTEM_PROMPT`, `PI_CLAUDE_CLI_AUTOCOMPACT`, `PI_CLAUDE_CLI_HERMETIC`, `PI_CLAUDE_CLI_STRICT_MCP`, `PI_CLAUDE_CLI_EPHEMERAL`, `PI_CLAUDE_CLI_TOOL_RESULTS`, `PI_CLAUDE_CLI_NO_AGENT_WAIT` and `PI_CLAUDE_CLI_AGENT_WAIT_MS` exports; their renamed spellings are not supported either. Pi always supplies isolation, owns compaction and executes tools.
+
+A corrupt `session-map.json` in the state directory now fails closed instead of being ignored, and blocks every Claude turn, including in new sessions, until it is repaired or removed. The error names the state directory; starting a fresh Pi session alone does not clear it.
+
+Package data/profile/state directories already use `pi-claude-tether`: do not move them or re-login merely for the rename. The MCP namespace remains `mcp__custom-tools__`; tool receipts do not depend on the former provider ID. Historical changelog entries, fork attribution and retained internal evidence keep their original names.
+
+A saved `pi-claude-cli` session cannot silently resume on another provider. Select `pi-claude-tether/<model>` deliberately or start a fresh Pi session. CLI-owned legacy transcripts and saved prompts are not migrated or replayed.
+
 ## 0.11.1 — 2026-11-05
 
 - A pre-model OAuth refresh collision ("another Claude Code process is refreshing it") now retires the process and returns a transient error, so Pi's own retry decides, instead of killing the turn.

@@ -23,10 +23,10 @@ let stateDir: string;
 
 beforeEach(() => {
   stateDir = mkdtempSync(join(tmpdir(), "pcc-accounts-"));
-  vi.stubEnv("PI_CLAUDE_CLI_STATE_DIR", stateDir);
-  vi.stubEnv("PI_CLAUDE_CLI_ACCOUNTS", "");
-  vi.stubEnv("PI_CLAUDE_CLI_ACCOUNT", "");
-  vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "");
+  vi.stubEnv("PI_CLAUDE_TETHER_STATE_DIR", stateDir);
+  vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNTS", "");
+  vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNT", "");
+  vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "");
 });
 
 afterEach(() => {
@@ -53,7 +53,7 @@ describe("parseAccountSet", () => {
     for (const bad of ["a/b", "../x", "..", ".", "a\\b", "a b", ""]) {
       if (bad === "") continue; // blank entries are skipped, not names
       expect(() => parseAccountSet(`default,${bad}`)).toThrow(
-        /PI_CLAUDE_CLI_ACCOUNTS/,
+        /PI_CLAUDE_TETHER_ACCOUNTS/,
       );
     }
   });
@@ -70,13 +70,13 @@ describe("selectedAccountName", () => {
 
   it("fails loudly for an undeclared account instead of guessing", () => {
     expect(() => selectedAccountName(["default", "b"], "c")).toThrow(
-      /PI_CLAUDE_CLI_ACCOUNT.*not in.*PI_CLAUDE_CLI_ACCOUNTS/,
+      /PI_CLAUDE_TETHER_ACCOUNT.*not in.*PI_CLAUDE_TETHER_ACCOUNTS/,
     );
   });
 
   it("fails loudly for an invalid name", () => {
     expect(() => selectedAccountName(["default"], "a/b")).toThrow(
-      /PI_CLAUDE_CLI_ACCOUNT/,
+      /PI_CLAUDE_TETHER_ACCOUNT/,
     );
   });
 });
@@ -84,18 +84,18 @@ describe("selectedAccountName", () => {
 describe("failoverEnabled", () => {
   it("is off unless explicitly opted in", () => {
     expect(failoverEnabled()).toBe(false);
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "0");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "0");
     expect(failoverEnabled()).toBe(false);
   });
 
   it('is on for exactly "1"', () => {
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     expect(failoverEnabled()).toBe(true);
   });
 
   it("rejects broader truthy spellings", () => {
     for (const value of ["true", "yes", "TRUE", "on", " 1", "1 "]) {
-      vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", value);
+      vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", value);
       expect(failoverEnabled()).toBe(false);
     }
   });
@@ -211,7 +211,7 @@ describe("selectFailoverAccount", () => {
 
 describe("pickInitialAccount", () => {
   it("pins the manual selection", () => {
-    vi.stubEnv("PI_CLAUDE_CLI_ACCOUNT", "b");
+    vi.stubEnv("PI_CLAUDE_TETHER_ACCOUNT", "b");
     expect(pickInitialAccount(["default", "b"])).toBe("b");
   });
 
@@ -220,7 +220,7 @@ describe("pickInitialAccount", () => {
   });
 
   it("with failover on, skips a still-exhausted pin for the first fresh account", () => {
-    vi.stubEnv("PI_CLAUDE_CLI_FAILOVER", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_FAILOVER", "1");
     markAccountExhausted("default", FUTURE_RESETSAT);
     expect(pickInitialAccount(["default", "b"])).toBe("b");
   });

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  assertContextPolicy,
   assertContextCliVersion,
   parseCliVersion,
   compareCliVersions,
@@ -8,10 +7,7 @@ import {
   isNewerThanTestedCli,
   MIN_CONTEXT_CLI_VERSION,
   TESTED_CLI_MAX,
-  PI_CONTEXT_MARKER,
-  usesPiContext,
 } from "../src/context-policy";
-import { buildSystemPrompt } from "../src/prompt-builder";
 import {
   piSystemPrompt,
   replayPiMessages,
@@ -134,61 +130,18 @@ describe("pi context", () => {
   });
   it('strict version mode is exactly "1"', () => {
     expect(strictCliVersion({} as any)).toBe(false);
-    expect(strictCliVersion({ PI_CLAUDE_CLI_STRICT_VERSION: "1" } as any)).toBe(
-      true,
-    );
     expect(
-      strictCliVersion({ PI_CLAUDE_CLI_STRICT_VERSION: "true" } as any),
+      strictCliVersion({ PI_CLAUDE_TETHER_STRICT_VERSION: "1" } as any),
+    ).toBe(true);
+    expect(
+      strictCliVersion({ PI_CLAUDE_TETHER_STRICT_VERSION: "true" } as any),
     ).toBe(false);
   });
-  it("defaults to pi ownership and rejects misspelled policies", () => {
-    expect(usesPiContext({})).toBe(true);
-    expect(usesPiContext({ PI_CLAUDE_CLI_CONTEXT: "" })).toBe(true);
-    expect(usesPiContext({ PI_CLAUDE_CLI_CONTEXT: "  " })).toBe(true);
-    expect(usesPiContext({ PI_CLAUDE_CLI_CONTEXT: "legacy" })).toBe(false);
-    expect(usesPiContext({ PI_CLAUDE_CLI_CONTEXT: " PI " })).toBe(true);
-    expect(() => usesPiContext({ PI_CLAUDE_CLI_CONTEXT: "typo" })).toThrow(
-      "must be",
-    );
-  });
-
-  it("does not rediscover this repository's AGENTS or add history-dependent prompt text", () => {
-    vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "pi");
-    const first = buildSystemPrompt(
-      { systemPrompt: prompt, messages: [] },
-      process.cwd(),
-    );
-    const next = buildSystemPrompt(
-      { systemPrompt: prompt, messages: [{ role: "toolResult" }] },
-      process.cwd(),
-    );
-    expect(first).toBe(piSystemPrompt(prompt));
-    expect(next).toBe(first);
-    expect(
-      buildSystemPrompt(
-        { systemPrompt: prompt, messages: [] },
-        process.cwd(),
-        "pi",
-      ),
-    ).toBe(first);
+  it("preserves Pi's supplied prompt without rediscovering repository instructions", () => {
+    const first = piSystemPrompt(prompt);
+    expect(piSystemPrompt(prompt)).toBe(first);
     expect(first.startsWith(prompt)).toBe(true);
     expect(first).toContain("edits[].oldText");
-  });
-
-  it("requires fresh sessions across policy boundaries, but permits same-policy resumes", () => {
-    expect(() => assertContextPolicy("legacy prompt", false)).not.toThrow();
-    expect(() => assertContextPolicy(undefined, false)).not.toThrow();
-    expect(() =>
-      assertContextPolicy(`${PI_CONTEXT_MARKER}\npi prompt`, true),
-    ).not.toThrow();
-    expect(() => assertContextPolicy("legacy prompt", true)).toThrow(
-      "fresh pi session",
-    );
-    expect(() => assertContextPolicy(undefined, true)).toThrow(
-      "fresh pi session",
-    );
-    expect(() =>
-      assertContextPolicy(`${PI_CONTEXT_MARKER}\npi prompt`, false),
-    ).toThrow("fresh pi session");
+    expect(first).toContain(suffix);
   });
 });

@@ -2,9 +2,9 @@
 """Native installed Pi 1.4.0 RPC continuity proof; explicit source loading only.
 
 Live (uses your Claude Haiku subscription; never runs on import/help):
-  python3 continuity-proof.py --source-extension-dir /checkout/integrations/pi-claude-cli \
+  python3 continuity-proof.py --source-extension-dir /checkout/integrations/pi-claude-tether \
     --output-dir /tmp/continuity-proof-candidate --live
-Baseline: use the same command with the baseline source directory, fresh output.
+Baseline: use the script from the baseline checkout (matching its provider/env identity), with fresh output.
 Stub: replace --live with --stub (embedded fail-closed fixture), optionally
   --transient-retry to prove native parked retry. Or use --stub-cli /path/to/fixture.
 The basic e2e stub is not a continuity fixture. A compatible fixture
@@ -37,7 +37,7 @@ import sys
 import time
 
 MODEL = "claude-haiku-5-5"  # Model used for the live proof.
-PROVIDER = "pi-claude-cli"
+PROVIDER = "pi-claude-tether"
 
 
 def _source_package_name(source: Path) -> str | None:
@@ -1026,7 +1026,7 @@ async def run(args):
                XDG_STATE_HOME=str(output / "state"), XDG_CONFIG_HOME=str(output / "config"),
                XDG_DATA_HOME=str(output / "data"), XDG_CACHE_HOME=str(output / "cache"),
                XDG_RUNTIME_DIR=str(output / "runtime"), TMPDIR=str(output / "runtime"),
-               PI_CLAUDE_CLI_STATE_DIR=str(output / "pcc-state"), CONTINUITY_TOOL_LOG=str(output / "tool-events.jsonl"),
+               PI_CLAUDE_TETHER_STATE_DIR=str(output / "pcc-state"), CONTINUITY_TOOL_LOG=str(output / "tool-events.jsonl"),
                CONTINUITY_CLI_LOG=str(output / "cli-metadata.jsonl"),
                CONTINUITY_TRANSPORT="live" if args.live else "stub")
     if args.live:
@@ -1038,20 +1038,18 @@ async def run(args):
     if args.receipt_shape:
         env["CONTINUITY_RECEIPT_SHAPE"] = args.receipt_shape
     if args.failover:
-        env["PI_CLAUDE_CLI_ACCOUNTS"] = "default,b"
-        env["PI_CLAUDE_CLI_FAILOVER"] = "1"
+        env["PI_CLAUDE_TETHER_ACCOUNTS"] = "default,b"
+        env["PI_CLAUDE_TETHER_FAILOVER"] = "1"
         env["CONTINUITY_FAILOVER"] = "1"
-        env["PI_CLAUDE_CLI_STATE_DIR"] = str(output / "pcc-state")
+        env["PI_CLAUDE_TETHER_STATE_DIR"] = str(output / "pcc-state")
     if args.overage:
         env["CONTINUITY_OVERAGE"] = "1"
         if args.overage == "allow":
-            env["PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS"] = "1"
+            env["PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS"] = "1"
     if args.seed_receipt_mismatch:
         env["CONTINUITY_RECEIPT_SEED"] = str(output / "receipt-mismatch.seed")
     if args.refresh_retry:
         env["CONTINUITY_REFRESH_RETRY"] = "1"
-    if args.context:
-        env["PI_CLAUDE_CLI_CONTEXT"] = args.context
     if args.stub_cli or args.stub:
         if args.stub:
             stub = output / "continuity-cli-stub.cjs"
@@ -1081,7 +1079,7 @@ async def run(args):
             (" When explicitly asked for a parallel pair, also call continuity_side in the same assistant message, before either result arrives." if args.parallel_handoff else ""),
             "--tools", "continuity_tool,continuity_side" if args.parallel_handoff else "continuity_tool", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-mcp"]
     source_files = [entry, fixture, source / "tests/e2e/continuity-extension.ts", Path(__file__).resolve(), *sorted((source / "src").rglob("*.ts")), *sorted((source / "src").rglob("*.js")), *sorted((source / "src").rglob("*.cjs"))]
-    manifest = {"status": "starting", **stamp(), "argv": argv, "piBinary": str(pi), "piResolved": str(pi.resolve()), "piSha256": sha(pi.resolve()), "piVersion": version, "sourceExtensionDir": str(source), "contextOverride": args.context, "scenarioSelection": args.scenario, "receiptShape": args.receipt_shape, "parallelHandoff": args.parallel_handoff, "seedReceiptMismatch": args.seed_receipt_mismatch, "overage": args.overage, "transport": env["CONTINUITY_TRANSPORT"], "scrubbedEnvironmentKeys": sorted(scrubbed), "isolatedState": {k: env[k] for k in ("PI_CODING_AGENT_DIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "TMPDIR", "PI_CLAUDE_CLI_STATE_DIR")}, "homePreservedForSubscription": args.live, "sourceHashes": {str(p): sha(p) for p in source_files}, "scenarios": []}
+    manifest = {"status": "starting", **stamp(), "argv": argv, "piBinary": str(pi), "piResolved": str(pi.resolve()), "piSha256": sha(pi.resolve()), "piVersion": version, "sourceExtensionDir": str(source), "scenarioSelection": args.scenario, "receiptShape": args.receipt_shape, "parallelHandoff": args.parallel_handoff, "seedReceiptMismatch": args.seed_receipt_mismatch, "overage": args.overage, "transport": env["CONTINUITY_TRANSPORT"], "scrubbedEnvironmentKeys": sorted(scrubbed), "isolatedState": {k: env[k] for k in ("PI_CODING_AGENT_DIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "TMPDIR", "PI_CLAUDE_TETHER_STATE_DIR")}, "homePreservedForSubscription": args.live, "sourceHashes": {str(p): sha(p) for p in source_files}, "scenarios": []}
     if args.receipt_shape in ("image-derivative", "multi-text-error"):
         manifest["receiptFixture"] = {"shape": args.receipt_shape, "generatedExtension": str(fixture), "generatedExtensionSha256": sha(fixture)}
         if args.receipt_shape == "image-derivative":
@@ -1408,13 +1406,12 @@ def main():
     engine = parser.add_mutually_exclusive_group()
     engine.add_argument("--installed-pi-bin", help="Explicit installed Pi for stub qualification only; strict real path, executable and version checks; never a fixture fallback")
     engine.add_argument("--pi-bin", help="Explicit Pi binary override; its --version must equal the owned SDK version, else [owned-pi-engine-version-mismatch]. When omitted (or via PI_BIN), the owned devDependency engine resolves via scripts/resolve-pi-cli.mjs; no PATH fallback.")
-    parser.add_argument("--context", choices=("pi", "legacy"), help="Optional adapter policy override; default is the source's own default")
     route = parser.add_mutually_exclusive_group(required=True)
     route.add_argument("--live", action="store_true", help="Use only existing private Claude Haiku subscription profile")
     route.add_argument("--stub", action="store_true", help="Embedded fail-closed deterministic CLI fixture, disposable HOME; native Pi RPC still real")
     route.add_argument("--stub-cli", type=Path, help="Executable continuity-compatible Claude fixture; disposable HOME, no live credential route")
     parser.add_argument("--failover", action="store_true", help="Stub-only multi-account failover: stub rejects under the default profile and answers under account b")
-    parser.add_argument("--overage", choices=("deny", "allow"), help="Stub-only usage-credit guard: stub bills the turn to overage; deny expects the guard failure, allow expects success with PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS=1")
+    parser.add_argument("--overage", choices=("deny", "allow"), help="Stub-only usage-credit guard: stub bills the turn to overage; deny expects the guard failure, allow expects success with PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS=1")
     parser.add_argument("--receipt-shape", choices=("synthetic-error", "error-outer-whitespace", "synthetic-read", "image-derivative", "multi-text-error", "long-error"), help="Synthetic failed-bash error, large read, image derivative, or multi-text error shape (generated fixture; src/tests unchanged)")
     parser.add_argument("--expected-cli-version", help="Exact physical CLI version required by this qualification")
     parser.add_argument("--parallel-handoff", action="store_true", help="Request two results in the same native handoff")

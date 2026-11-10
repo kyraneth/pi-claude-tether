@@ -111,7 +111,9 @@ describe("CliProcess", () => {
     const n = 20_001; // one past the old cap, which silently dropped the first line
     let chunk = "";
     for (let i = 0; i < n; i++)
-      chunk += JSON.stringify({ type: "assistant", message: { content: [], i } }) + "\n";
+      chunk +=
+        JSON.stringify({ type: "assistant", message: { content: [], i } }) +
+        "\n";
     proc.stdout.write(chunk);
     await vi.advanceTimersByTimeAsync(0);
     const a = sink();
@@ -143,7 +145,7 @@ describe("CliProcess", () => {
     expect(a.messages).toHaveLength(0);
   });
 
-  it("denies handoff tools when the proxy is off (legacy interrupt path)", async () => {
+  it("denies handoff tools when the proxy is off (interrupt-and-replay fallback)", async () => {
     const { proc } = make(fakeProc(), false);
     proc.stdout.write(
       JSON.stringify({
@@ -176,66 +178,293 @@ describe("CliProcess", () => {
   });
 
   it.each([
-    { kind: "text string", content: [{ type: "text", text: "data" }], echo: "data" },
-    { kind: "API image", content: [{ type: "image", data: "AA==", mimeType: "image/png" }],
-      echo: [{ type: "image", source: { type: "base64", data: "AA==", media_type: "image/png" } }] },
-  ])("confirms canonical $kind receipts only at CLI stdout ingress", async ({ content, echo }) => {
-    const { cli, proc } = make();
-    cli.writeUser("go");
-    cli.noteHandoffToolUse("t1");
-    dispatchHandoffCall("cli-1", call("t1").call);
-    const received = cli.deliverHandoffResult("t1", { content: content as any });
-    expect(cli.hasUnconfirmedHandoffResults).toBe(true);
-    proc.stdout.write(JSON.stringify({ type: "user", message: { role: "user", content: [
-      { type: "tool_result", tool_use_id: "t1", content: echo },
-    ] } }) + "\n");
-    expect(await received).toBe(true);
-    expect(cli.hasUnconfirmedHandoffResults).toBe(false);
-  });
+    {
+      kind: "text string",
+      content: [{ type: "text", text: "data" }],
+      echo: "data",
+    },
+    {
+      kind: "API image",
+      content: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+      echo: [
+        {
+          type: "image",
+          source: { type: "base64", data: "AA==", media_type: "image/png" },
+        },
+      ],
+    },
+  ])(
+    "confirms canonical $kind receipts only at CLI stdout ingress",
+    async ({ content, echo }) => {
+      const { cli, proc } = make();
+      cli.writeUser("go");
+      cli.noteHandoffToolUse("t1");
+      dispatchHandoffCall("cli-1", call("t1").call);
+      const received = cli.deliverHandoffResult("t1", {
+        content: content as any,
+      });
+      expect(cli.hasUnconfirmedHandoffResults).toBe(true);
+      proc.stdout.write(
+        JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "t1", content: echo },
+            ],
+          },
+        }) + "\n",
+      );
+      expect(await received).toBe(true);
+      expect(cli.hasUnconfirmedHandoffResults).toBe(false);
+    },
+  );
 
   describe("derivative receipt qualification", () => {
     const text = { type: "text" as const, text: "private-companion-unchanged" };
     const original = imageHeader("png", 2000, 1000);
     const derivative = apiImage(imageHeader("jpeg", 1000, 500));
-    const errors = [{ type: "text", text: "  private-error-a\r\n" }, { type: "text", text: "private-error-b  " }];
-    const joined = errors.map(b => b.text).join("\n");
+    const errors = [
+      { type: "text", text: "  private-error-a\r\n" },
+      { type: "text", text: "private-error-b  " },
+    ];
+    const joined = errors.map((b) => b.text).join("\n");
     const cases = [
-      ...(["png", "jpeg", "gif", "vp8", "vp8l", "vp8x"] as const).map(format => ({
-        kind: `${format} derivative`, content: [text, original], echo: [text, apiImage(imageHeader(format, 1000, 500))], accepted: true,
-      })),
-      { kind: "same-size recompression", content: [original], echo: [apiImage(imageHeader("png", 2000, 1000, 1))], accepted: true },
-      { kind: "rounded aspect", content: [imageHeader("png", 2000, 1001)], echo: [apiImage(imageHeader("jpeg", 999, 500))], accepted: true },
-      { kind: "error image derivative", content: [text, original], echo: [text, derivative], isError: true, accepted: true },
-      { kind: "multiple image derivatives", content: [original, text, imageHeader("gif", 300, 600)], echo: [derivative, text, apiImage(imageHeader("vp8l", 150, 300))], accepted: true },
-      { kind: "three error texts including empty", content: [...errors, { type: "text", text: "" }], echo: joined + "\n", isError: true, accepted: true },
-      { kind: "exact error newline flatten", content: errors, echo: joined, isError: true, accepted: true },
-      { kind: "success flatten", content: errors, echo: joined, accepted: false },
-      { kind: "physically observed trimmed error flatten", content: errors, echo: joined.trim(), isError: true, accepted: true },
-      { kind: "empty trimmed error placeholder", content: [{ type: "text", text: "  " }, { type: "text", text: "\t\r\n" }], echo: "", isError: true, accepted: false },
-      { kind: "observed padded trimmed flatten", content: errors, echo: joined.trim() + " ", isError: true, accepted: false },
-      { kind: "trimmed flatten internal CRLF mutation", content: errors, echo: joined.trim().replace("\r\n", "\n"), isError: true, accepted: false },
-      { kind: "trimmed success flatten", content: errors, echo: joined.trim(), accepted: false },
-      { kind: "changed error join", content: errors, echo: errors.map(b => b.text).join(""), isError: true, accepted: false },
-      { kind: "error generic denial", content: errors, echo: "tool denied", isError: true, accepted: false },
-      { kind: "padded error join", content: errors, echo: joined + " ", isError: true, accepted: false },
-      { kind: "CRLF error join", content: errors, echo: errors.map(b => b.text).join("\r\n"), isError: true, accepted: false },
-      { kind: "block error join", content: errors, echo: [{ type: "text", text: joined }], isError: true, accepted: false },
-      { kind: "flatten status loss", content: errors, echo: joined, isError: true, echoError: false, accepted: false },
-      { kind: "mixed error flatten", content: [errors[0], original], echo: errors[0].text, isError: true, accepted: false },
-      { kind: "image status loss", content: [original], echo: [derivative], isError: true, echoError: false, accepted: false },
-      { kind: "image denial", content: [original], echo: "tool denied", accepted: false },
-      { kind: "image dropped", content: [text, original], echo: [text], accepted: false },
-      { kind: "image added", content: [original], echo: [derivative, derivative], accepted: false },
-      { kind: "blocks reordered", content: [text, original], echo: [derivative, text], accepted: false },
-      { kind: "changed companion", content: [text, original], echo: [{ ...text, text: text.text + " " }, derivative], accepted: false },
-      { kind: "unknown block", content: [{ type: "resource" }, original], echo: [{ type: "resource" }, derivative], accepted: false },
-      { kind: "upscale", content: [original], echo: [apiImage(imageHeader("jpeg", 2002, 1001))], accepted: false },
-      { kind: "wrong aspect", content: [original], echo: [apiImage(imageHeader("jpeg", 1000, 501))], accepted: false },
-      { kind: "unparseable expected", content: [{ ...original, data: "AA==" }], echo: [derivative], accepted: false },
-      { kind: "unparseable observed", content: [original], echo: [{ ...derivative, source: { ...derivative.source, data: "AA==" } }], accepted: false },
-      { kind: "non-base64 image source", content: [original], echo: [{ ...derivative, source: { ...derivative.source, type: "url" } }], accepted: false },
-      { kind: "zero observed dimensions", content: [original], echo: [apiImage(imageHeader("png", 0, 500))], accepted: false },
-      { kind: "declared media mismatch", content: [original], echo: [{ ...derivative, source: { ...derivative.source, media_type: "image/png" } }], accepted: false },
+      ...(["png", "jpeg", "gif", "vp8", "vp8l", "vp8x"] as const).map(
+        (format) => ({
+          kind: `${format} derivative`,
+          content: [text, original],
+          echo: [text, apiImage(imageHeader(format, 1000, 500))],
+          accepted: true,
+        }),
+      ),
+      {
+        kind: "same-size recompression",
+        content: [original],
+        echo: [apiImage(imageHeader("png", 2000, 1000, 1))],
+        accepted: true,
+      },
+      {
+        kind: "rounded aspect",
+        content: [imageHeader("png", 2000, 1001)],
+        echo: [apiImage(imageHeader("jpeg", 999, 500))],
+        accepted: true,
+      },
+      {
+        kind: "error image derivative",
+        content: [text, original],
+        echo: [text, derivative],
+        isError: true,
+        accepted: true,
+      },
+      {
+        kind: "multiple image derivatives",
+        content: [original, text, imageHeader("gif", 300, 600)],
+        echo: [derivative, text, apiImage(imageHeader("vp8l", 150, 300))],
+        accepted: true,
+      },
+      {
+        kind: "three error texts including empty",
+        content: [...errors, { type: "text", text: "" }],
+        echo: joined + "\n",
+        isError: true,
+        accepted: true,
+      },
+      {
+        kind: "exact error newline flatten",
+        content: errors,
+        echo: joined,
+        isError: true,
+        accepted: true,
+      },
+      {
+        kind: "success flatten",
+        content: errors,
+        echo: joined,
+        accepted: false,
+      },
+      {
+        kind: "physically observed trimmed error flatten",
+        content: errors,
+        echo: joined.trim(),
+        isError: true,
+        accepted: true,
+      },
+      {
+        kind: "empty trimmed error placeholder",
+        content: [
+          { type: "text", text: "  " },
+          { type: "text", text: "\t\r\n" },
+        ],
+        echo: "",
+        isError: true,
+        accepted: false,
+      },
+      {
+        kind: "observed padded trimmed flatten",
+        content: errors,
+        echo: joined.trim() + " ",
+        isError: true,
+        accepted: false,
+      },
+      {
+        kind: "trimmed flatten internal CRLF mutation",
+        content: errors,
+        echo: joined.trim().replace("\r\n", "\n"),
+        isError: true,
+        accepted: false,
+      },
+      {
+        kind: "trimmed success flatten",
+        content: errors,
+        echo: joined.trim(),
+        accepted: false,
+      },
+      {
+        kind: "changed error join",
+        content: errors,
+        echo: errors.map((b) => b.text).join(""),
+        isError: true,
+        accepted: false,
+      },
+      {
+        kind: "error generic denial",
+        content: errors,
+        echo: "tool denied",
+        isError: true,
+        accepted: false,
+      },
+      {
+        kind: "padded error join",
+        content: errors,
+        echo: joined + " ",
+        isError: true,
+        accepted: false,
+      },
+      {
+        kind: "CRLF error join",
+        content: errors,
+        echo: errors.map((b) => b.text).join("\r\n"),
+        isError: true,
+        accepted: false,
+      },
+      {
+        kind: "block error join",
+        content: errors,
+        echo: [{ type: "text", text: joined }],
+        isError: true,
+        accepted: false,
+      },
+      {
+        kind: "flatten status loss",
+        content: errors,
+        echo: joined,
+        isError: true,
+        echoError: false,
+        accepted: false,
+      },
+      {
+        kind: "mixed error flatten",
+        content: [errors[0], original],
+        echo: errors[0].text,
+        isError: true,
+        accepted: false,
+      },
+      {
+        kind: "image status loss",
+        content: [original],
+        echo: [derivative],
+        isError: true,
+        echoError: false,
+        accepted: false,
+      },
+      {
+        kind: "image denial",
+        content: [original],
+        echo: "tool denied",
+        accepted: false,
+      },
+      {
+        kind: "image dropped",
+        content: [text, original],
+        echo: [text],
+        accepted: false,
+      },
+      {
+        kind: "image added",
+        content: [original],
+        echo: [derivative, derivative],
+        accepted: false,
+      },
+      {
+        kind: "blocks reordered",
+        content: [text, original],
+        echo: [derivative, text],
+        accepted: false,
+      },
+      {
+        kind: "changed companion",
+        content: [text, original],
+        echo: [{ ...text, text: text.text + " " }, derivative],
+        accepted: false,
+      },
+      {
+        kind: "unknown block",
+        content: [{ type: "resource" }, original],
+        echo: [{ type: "resource" }, derivative],
+        accepted: false,
+      },
+      {
+        kind: "upscale",
+        content: [original],
+        echo: [apiImage(imageHeader("jpeg", 2002, 1001))],
+        accepted: false,
+      },
+      {
+        kind: "wrong aspect",
+        content: [original],
+        echo: [apiImage(imageHeader("jpeg", 1000, 501))],
+        accepted: false,
+      },
+      {
+        kind: "unparseable expected",
+        content: [{ ...original, data: "AA==" }],
+        echo: [derivative],
+        accepted: false,
+      },
+      {
+        kind: "unparseable observed",
+        content: [original],
+        echo: [
+          { ...derivative, source: { ...derivative.source, data: "AA==" } },
+        ],
+        accepted: false,
+      },
+      {
+        kind: "non-base64 image source",
+        content: [original],
+        echo: [
+          { ...derivative, source: { ...derivative.source, type: "url" } },
+        ],
+        accepted: false,
+      },
+      {
+        kind: "zero observed dimensions",
+        content: [original],
+        echo: [apiImage(imageHeader("png", 0, 500))],
+        accepted: false,
+      },
+      {
+        kind: "declared media mismatch",
+        content: [original],
+        echo: [
+          {
+            ...derivative,
+            source: { ...derivative.source, media_type: "image/png" },
+          },
+        ],
+        accepted: false,
+      },
     ];
     it.each(cases)("$kind", async ({ content, echo, accepted, ...flags }) => {
       const isError = "isError" in flags && flags.isError;
@@ -243,41 +472,96 @@ describe("CliProcess", () => {
       cli.writeUser("go");
       cli.noteHandoffToolUse("t1");
       dispatchHandoffCall("cli-1", call("t1").call);
-      const receipt = cli.deliverHandoffResult("t1", { content: content as any, isError });
+      const receipt = cli.deliverHandoffResult("t1", {
+        content: content as any,
+        isError,
+      });
       expect(cli.hasUnconfirmedHandoffResults).toBe(true);
       const echoError = "echoError" in flags ? flags.echoError : isError;
-      proc.stdout.write(JSON.stringify({ type: "user", message: { role: "user", content: [
-        { type: "tool_result", tool_use_id: "t1", is_error: echoError, content: echo },
-      ] } }) + "\n");
+      proc.stdout.write(
+        JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "t1",
+                is_error: echoError,
+                content: echo,
+              },
+            ],
+          },
+        }) + "\n",
+      );
       expect(await receipt).toBe(accepted);
       expect(cli.retired).toBe(!accepted);
     });
 
     it("does not acknowledge the wrong id or nested-agent derivative", async () => {
       const { cli, proc } = make();
-      cli.writeUser("go"); cli.noteHandoffToolUse("t1");
+      cli.writeUser("go");
+      cli.noteHandoffToolUse("t1");
       const receipt = cli.deliverHandoffResult("t1", { content: [original] });
-      const echo = (id: string, nested = false) => proc.stdout.write(JSON.stringify({ type: "user",
-        ...(nested ? { parent_tool_use_id: "nested" } : {}),
-        message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [derivative] }] },
-      }) + "\n");
-      echo("wrong"); echo("t1", true);
+      const echo = (id: string, nested = false) =>
+        proc.stdout.write(
+          JSON.stringify({
+            type: "user",
+            ...(nested ? { parent_tool_use_id: "nested" } : {}),
+            message: {
+              role: "user",
+              content: [
+                { type: "tool_result", tool_use_id: id, content: [derivative] },
+              ],
+            },
+          }) + "\n",
+        );
+      echo("wrong");
+      echo("t1", true);
       expect(cli.hasUnconfirmedHandoffResults).toBe(true);
       expect(cli.retired).toBe(false);
-      echo("t1"); expect(await receipt).toBe(true);
+      echo("t1");
+      expect(await receipt).toBe(true);
     });
 
     it("reports only body-free image dimensions and media on mismatch", async () => {
       const { cli, proc } = make();
-      cli.writeUser("go"); cli.noteHandoffToolUse("t1");
-      const receipt = cli.deliverHandoffResult("t1", { content: [text, original] });
-      proc.stdout.write(JSON.stringify({ type: "user", message: { role: "user", content: [
-        { type: "tool_result", tool_use_id: "t1", content: [text, apiImage(imageHeader("jpeg", 1000, 501))] },
-      ] } }) + "\n");
+      cli.writeUser("go");
+      cli.noteHandoffToolUse("t1");
+      const receipt = cli.deliverHandoffResult("t1", {
+        content: [text, original],
+      });
+      proc.stdout.write(
+        JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "t1",
+                content: [text, apiImage(imageHeader("jpeg", 1000, 501))],
+              },
+            ],
+          },
+        }) + "\n",
+      );
       expect(await receipt).toBe(false);
       const metadata = cli.handoffReceiptMismatch!;
-      expect(metadata.expected.images).toEqual([{ blockIndex: 1, declaredMediaType: "image/png", header: { mediaType: "image/png", width: 2000, height: 1000 } }]);
-      expect(metadata.observed.images).toEqual([{ blockIndex: 1, declaredMediaType: "image/jpeg", header: { mediaType: "image/jpeg", width: 1000, height: 501 } }]);
+      expect(metadata.expected.images).toEqual([
+        {
+          blockIndex: 1,
+          declaredMediaType: "image/png",
+          header: { mediaType: "image/png", width: 2000, height: 1000 },
+        },
+      ]);
+      expect(metadata.observed.images).toEqual([
+        {
+          blockIndex: 1,
+          declaredMediaType: "image/jpeg",
+          header: { mediaType: "image/jpeg", width: 1000, height: 501 },
+        },
+      ]);
       expect(JSON.stringify(metadata)).not.toContain(text.text);
       expect(JSON.stringify(metadata)).not.toContain(original.data);
     });
@@ -294,10 +578,26 @@ describe("CliProcess", () => {
     cli.writeUser("go");
     cli.noteHandoffToolUse("t1");
     dispatchHandoffCall("cli-1", call("t1").call);
-    const receipt = cli.deliverHandoffResult("t1", { content: [{ type: "text", text }], isError: true });
-    proc.stdout.write(JSON.stringify({ type: "user", message: { role: "user", content: [
-      { type: "tool_result", tool_use_id: "t1", is_error: true, content: text.trimStart() },
-    ] } }) + "\n");
+    const receipt = cli.deliverHandoffResult("t1", {
+      content: [{ type: "text", text }],
+      isError: true,
+    });
+    proc.stdout.write(
+      JSON.stringify({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "t1",
+              is_error: true,
+              content: text.trimStart(),
+            },
+          ],
+        },
+      }) + "\n",
+    );
     expect(await receipt).toBe(true);
     expect(cli.retired).toBe(false);
   });
@@ -307,33 +607,102 @@ describe("CliProcess", () => {
     const text = "    body \t\r\n";
     cli.writeUser("go");
     cli.noteHandoffToolUse("t1");
-    const receipt = cli.deliverHandoffResult("t1", { content: [{ type: "text", text }], isError: true });
-    proc.stdout.write(JSON.stringify({ type: "user", message: { role: "user", content: [
-      { type: "tool_result", tool_use_id: "t1", is_error: true, content: text.trim() },
-    ] } }) + "\n");
+    const receipt = cli.deliverHandoffResult("t1", {
+      content: [{ type: "text", text }],
+      isError: true,
+    });
+    proc.stdout.write(
+      JSON.stringify({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "t1",
+              is_error: true,
+              content: text.trim(),
+            },
+          ],
+        },
+      }) + "\n",
+    );
     expect(await receipt).toBe(true);
     expect(cli.retired).toBe(false);
   });
 
   it.each([
-    { kind: "success whitespace loss", content: [{ type: "text", text: "    body" }], isError: false, echo: "body" },
-    { kind: "error non-whitespace loss", content: [{ type: "text", text: "    body" }], isError: true, echo: "ody" },
-    { kind: "error image loss", content: [{ type: "text", text: "    body" }, { type: "image", data: "AA==", mimeType: "image/png" }], isError: true, echo: "body" },
-    { kind: "error status loss", content: [{ type: "text", text: "body" }], isError: true, echo: "body", echoError: false },
-    { kind: "unexplained whitespace in echo", content: [{ type: "text", text: "    body" }], isError: true, echo: "body " },
-    { kind: "error CRLF normalization", content: [{ type: "text", text: "    body\r\nnext" }], isError: true, echo: "body\nnext" },
-  ])("rejects $kind rather than relaxing the receipt gate", async ({ content, isError, echo, echoError }) => {
-    const { cli, proc } = make();
-    cli.writeUser("go");
-    cli.noteHandoffToolUse("t1");
-    dispatchHandoffCall("cli-1", call("t1").call);
-    const receipt = cli.deliverHandoffResult("t1", { content: content as any, isError });
-    proc.stdout.write(JSON.stringify({ type: "user", message: { role: "user", content: [
-      { type: "tool_result", tool_use_id: "t1", is_error: echoError ?? isError, content: echo },
-    ] } }) + "\n");
-    expect(await receipt).toBe(false);
-    expect(cli.retired).toBe(true);
-  });
+    {
+      kind: "success whitespace loss",
+      content: [{ type: "text", text: "    body" }],
+      isError: false,
+      echo: "body",
+    },
+    {
+      kind: "error non-whitespace loss",
+      content: [{ type: "text", text: "    body" }],
+      isError: true,
+      echo: "ody",
+    },
+    {
+      kind: "error image loss",
+      content: [
+        { type: "text", text: "    body" },
+        { type: "image", data: "AA==", mimeType: "image/png" },
+      ],
+      isError: true,
+      echo: "body",
+    },
+    {
+      kind: "error status loss",
+      content: [{ type: "text", text: "body" }],
+      isError: true,
+      echo: "body",
+      echoError: false,
+    },
+    {
+      kind: "unexplained whitespace in echo",
+      content: [{ type: "text", text: "    body" }],
+      isError: true,
+      echo: "body ",
+    },
+    {
+      kind: "error CRLF normalization",
+      content: [{ type: "text", text: "    body\r\nnext" }],
+      isError: true,
+      echo: "body\nnext",
+    },
+  ])(
+    "rejects $kind rather than relaxing the receipt gate",
+    async ({ content, isError, echo, echoError }) => {
+      const { cli, proc } = make();
+      cli.writeUser("go");
+      cli.noteHandoffToolUse("t1");
+      dispatchHandoffCall("cli-1", call("t1").call);
+      const receipt = cli.deliverHandoffResult("t1", {
+        content: content as any,
+        isError,
+      });
+      proc.stdout.write(
+        JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "t1",
+                is_error: echoError ?? isError,
+                content: echo,
+              },
+            ],
+          },
+        }) + "\n",
+      );
+      expect(await receipt).toBe(false);
+      expect(cli.retired).toBe(true);
+    },
+  );
 
   it("holds pi's result when it arrives BEFORE the tools/call, and answers on arrival", () => {
     const { cli } = make();
@@ -371,16 +740,24 @@ describe("CliProcess", () => {
   it("refuses a steer inside an active CLI tool turn", () => {
     const { cli, proc } = make();
     cli.writeUser("go");
-    expect(() => cli.writeSteer([{ type: "text", text: "steer" }])).toThrow("settled CLI turn");
+    expect(() => cli.writeSteer([{ type: "text", text: "steer" }])).toThrow(
+      "settled CLI turn",
+    );
     expect(proc.stdin.write).toHaveBeenCalledTimes(1);
   });
 
   it("retires after a failed steer write, rather than reusing unconfirmed history", () => {
     const { cli, proc } = make();
     cli.writeUser("go");
-    proc.stdout.write(JSON.stringify({ type: "result", subtype: "success" }) + "\n");
-    proc.stdin.write.mockImplementationOnce(() => { throw new Error("closed stdin"); });
-    expect(() => cli.writeSteer([{ type: "text", text: "steer" }])).toThrow("closed stdin");
+    proc.stdout.write(
+      JSON.stringify({ type: "result", subtype: "success" }) + "\n",
+    );
+    proc.stdin.write.mockImplementationOnce(() => {
+      throw new Error("closed stdin");
+    });
+    expect(() => cli.writeSteer([{ type: "text", text: "steer" }])).toThrow(
+      "closed stdin",
+    );
     expect(cli.retired).toBe(true);
   });
 

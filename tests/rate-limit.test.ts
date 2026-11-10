@@ -95,7 +95,7 @@ describe("rateLimitIdentity", () => {
 
 describe("allowUsageCredits", () => {
   beforeEach(() => {
-    vi.stubEnv("PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS", "");
+    vi.stubEnv("PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS", "");
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -103,18 +103,18 @@ describe("allowUsageCredits", () => {
 
   it("is off unless explicitly opted in", () => {
     expect(allowUsageCredits()).toBe(false);
-    vi.stubEnv("PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS", "0");
+    vi.stubEnv("PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS", "0");
     expect(allowUsageCredits()).toBe(false);
   });
 
   it('is on for exactly "1"', () => {
-    vi.stubEnv("PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS", "1");
+    vi.stubEnv("PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS", "1");
     expect(allowUsageCredits()).toBe(true);
   });
 
   it("rejects broader truthy spellings", () => {
     for (const value of ["true", "yes", "TRUE", "on"]) {
-      vi.stubEnv("PI_CLAUDE_CLI_ALLOW_USAGE_CREDITS", value);
+      vi.stubEnv("PI_CLAUDE_TETHER_ALLOW_USAGE_CREDITS", value);
       expect(allowUsageCredits()).toBe(false);
     }
   });

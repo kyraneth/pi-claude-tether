@@ -30,7 +30,7 @@ const enabled = (
 ): CliThinking => ({ kind: "enabled", budgetTokens, effort, display }) as any;
 
 describe("resolveCliThinking: parity with pi-ai's Anthropic streamSimple", () => {
-  afterEach(() => delete process.env.PI_CLAUDE_CLI_THINKING_DISPLAY);
+  afterEach(() => delete process.env.PI_CLAUDE_TETHER_THINKING_DISPLAY);
 
   it("pins the duplicated budgets to the installed pi-ai", () => {
     expect(PI_THINKING_BUDGETS).toEqual(DEFAULT_THINKING_BUDGETS);
@@ -130,15 +130,15 @@ describe("resolveCliThinking: parity with pi-ai's Anthropic streamSimple", () =>
     });
   });
 
-  it("asks for summaries unless PI_CLAUDE_CLI_THINKING_DISPLAY=omitted", () => {
+  it("asks for summaries unless PI_CLAUDE_TETHER_THINKING_DISPLAY=omitted", () => {
     expect((resolveCliThinking(sonnet5, "high") as any).display).toBe(
       "summarized",
     );
-    process.env.PI_CLAUDE_CLI_THINKING_DISPLAY = " Omitted ";
+    process.env.PI_CLAUDE_TETHER_THINKING_DISPLAY = " Omitted ";
     expect((resolveCliThinking(sonnet5, "high") as any).display).toBe(
       "omitted",
     );
-    process.env.PI_CLAUDE_CLI_THINKING_DISPLAY = "whatever";
+    process.env.PI_CLAUDE_TETHER_THINKING_DISPLAY = "whatever";
     expect((resolveCliThinking(sonnet5, "high") as any).display).toBe(
       "summarized",
     );

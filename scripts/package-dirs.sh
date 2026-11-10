@@ -2,7 +2,7 @@
 # Derive this package's on-disk dirs from its own package.json name.
 #
 # pi-claude-tether uses ${XDG_DATA_HOME:-<home>/.local/share}/pi-claude-tether.
-# Other package names use the legacy <home>/.local/share/pi-claude-cli path.
+# Unknown package names retain their historical on-disk path; no data migration.
 #
 # This file is SOURCED, so it cannot use $0 for its own location. The caller
 # sets PCC_PKG_DIR to the package root first:

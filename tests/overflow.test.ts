@@ -39,7 +39,7 @@ describe("overflow error normalization", () => {
   describe("rewriteOverflowMessage", () => {
     const overflow = {
       role: "assistant",
-      provider: "pi-claude-cli",
+      provider: "pi-claude-tether",
       stopReason: "error",
       errorMessage: "prompt is too long: 214315 tokens > 200000 maximum",
     };
@@ -51,14 +51,14 @@ describe("overflow error normalization", () => {
         `${OVERFLOW_PREFIX}: prompt is too long: 214315 tokens > 200000 maximum`,
       );
       // Everything else on the message is preserved.
-      expect(result!.message.provider).toBe("pi-claude-cli");
+      expect(result!.message.provider).toBe("pi-claude-tether");
       expect(result!.message.stopReason).toBe("error");
     });
 
     it("scopes to this provider via message.provider or ctx model provider", () => {
       const foreign = { ...overflow, provider: "anthropic" };
       expect(rewriteOverflowMessage(foreign)).toBeUndefined();
-      expect(rewriteOverflowMessage(foreign, "pi-claude-cli")).toBeDefined();
+      expect(rewriteOverflowMessage(foreign, "pi-claude-tether")).toBeDefined();
     });
 
     it("ignores non-error, non-assistant, and non-overflow messages", () => {

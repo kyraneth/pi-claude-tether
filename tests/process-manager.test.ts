@@ -61,7 +61,6 @@ describe("spawnClaude", () => {
   });
 
   it("isolates Pi-owned Claude from the inherited legacy profile", () => {
-    vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "pi");
     vi.stubEnv("CLAUDE_CONFIG_DIR", "/legacy-profile");
     (execSync as any).mockReturnValue("2.1.283 (Claude Code)");
     try {
@@ -80,7 +79,6 @@ describe("spawnClaude", () => {
   });
 
   it("resolves the Pi-private CLI for version, auth and child without changing the parent PATH", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "pi");
     vi.stubEnv("PATH", "/legacy/bin");
     vi.stubEnv("HOME", cliFixtureHome);
     // Package-derived: resolves the historical prefix in this tree.
@@ -110,19 +108,6 @@ describe("spawnClaude", () => {
     }
   });
 
-  it("keeps the inherited Claude profile only in explicit legacy mode", () => {
-    vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "legacy");
-    vi.stubEnv("CLAUDE_CONFIG_DIR", "/legacy-profile");
-    try {
-      spawnClaude("claude-opus-5-5");
-      const options = (spawn as any).mock.calls.at(-1)[2];
-      expect(options.env.CLAUDE_CONFIG_DIR).toBe("/legacy-profile");
-      expect(options.env.PATH).toBe(process.env.PATH);
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
   it("spawns claude with all required CLI flags", () => {
     spawnClaude("claude-sonnet-4-5-20250929");
 
@@ -136,7 +121,7 @@ describe("spawnClaude", () => {
     expect(args).toContain("--output-format");
     expect(args).toContain("--verbose");
     expect(args).toContain("--include-partial-messages");
-    expect(args).not.toContain("--no-session-persistence");
+    expect(args).toContain("--no-session-persistence");
     expect(args).toContain("--model");
     expect(args).toContain("claude-sonnet-4-5-20250929");
     expect(args).toContain("--permission-prompt-tool");
@@ -171,60 +156,45 @@ describe("spawnClaude", () => {
     expect(options.cwd).toBe("/custom/path");
   });
 
-  it("writes system prompt to temp file and passes path via --append-system-prompt-file", () => {
+  it("writes system prompt to temp file and passes path via --system-prompt-file", () => {
     spawnClaude("claude-sonnet-4-5-20250929", "You are a helpful assistant.");
     const args = (spawn as any).mock.calls[0][1] as string[];
 
-    expect(args).toContain("--append-system-prompt-file");
-    const idx = args.indexOf("--append-system-prompt-file");
-    expect(args[idx + 1]).toContain("pi-claude-cli-sysprompt");
+    expect(args).toContain("--system-prompt-file");
+    const idx = args.indexOf("--system-prompt-file");
+    expect(args[idx + 1]).toContain("pi-claude-tether-sysprompt");
   });
 
   it("stages the system prompt owner-only in the private runtime directory", () => {
     if (process.platform === "win32") return;
     spawnClaude("claude-sonnet-4-5-20250929", "You are a helpful assistant.");
     const args = (spawn as any).mock.calls[0][1] as string[];
-    const file = args[args.indexOf("--append-system-prompt-file") + 1];
+    const file = args[args.indexOf("--system-prompt-file") + 1];
 
     // It used to be a pid-named file straight in a world-readable /tmp, and
     // it carries pi's instructions plus the host's project context.
-    expect(file).toMatch(/pi-claude-[^/]+\/pi-claude-cli-sysprompt[^/]*\.txt$/);
+    expect(file).toMatch(
+      /pi-claude-[^/]+\/pi-claude-tether-sysprompt[^/]*\.txt$/,
+    );
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
   });
 
-  it("never passes a path to the STRING form of either flag", () => {
-    // `--system-prompt` / `--append-system-prompt` take literal text. Handing
-    // one a path makes the path itself the system prompt: pi's instructions
-    // never reach the model, and the session silently runs on Claude Code's
-    // defaults. There is no error and no warning, so only this assertion and
-    // the live codename check stand between that bug and a release.
-    for (const mode of ["pi", "claude"] as const) {
-      (spawn as any).mockClear();
-      spawnClaude(
-        "claude-sonnet-4-5-20250929",
-        "You are a helpful assistant.",
-        {
-          systemPromptMode: mode,
-        },
-      );
-      const args = (spawn as any).mock.calls[0][1] as string[];
-      expect(args).not.toContain("--system-prompt");
-      expect(args).not.toContain("--append-system-prompt");
-      const flag =
-        mode === "pi" ? "--system-prompt-file" : "--append-system-prompt-file";
-      expect(args).toContain(flag);
-      // The value must be a real, readable file, not prompt text.
-      expect(readFileSync(args[args.indexOf(flag) + 1], "utf-8")).toBe(
-        "You are a helpful assistant.",
-      );
-    }
+  it("passes the Pi prompt as a readable file, never literal-path text", () => {
+    spawnClaude("claude-sonnet-4-5-20250929", "You are a helpful assistant.");
+    const args = (spawn as any).mock.calls[0][1] as string[];
+    expect(args).not.toContain("--system-prompt");
+    expect(args).not.toContain("--append-system-prompt");
+    expect(args).not.toContain("--append-system-prompt-file");
+    expect(
+      readFileSync(args[args.indexOf("--system-prompt-file") + 1], "utf8"),
+    ).toBe("You are a helpful assistant.");
   });
 
   it("temp file contains the system prompt text", () => {
     spawnClaude("claude-sonnet-4-5-20250929", "You are a helpful assistant.");
     const args = (spawn as any).mock.calls[0][1] as string[];
-    const tmpFile = args[args.indexOf("--append-system-prompt-file") + 1];
+    const tmpFile = args[args.indexOf("--system-prompt-file") + 1];
     expect(existsSync(tmpFile)).toBe(true);
     expect(readFileSync(tmpFile, "utf-8")).toBe("You are a helpful assistant.");
   });
@@ -447,7 +417,6 @@ describe("validateCliPresence", () => {
   });
 
   it("throws with install instructions when claude is absent from PATH", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "legacy");
     vi.stubEnv("PATH", "/nonexistent-pcc-bin");
 
     expect(() => validateCliPresence()).toThrow();
@@ -464,7 +433,6 @@ describe("validateCliPresence", () => {
 
 describe("validateCliAuth", () => {
   it("probes only the dedicated Pi-owned profile, not a legacy profile login", async () => {
-    vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "pi");
     vi.stubEnv("CLAUDE_CONFIG_DIR", "/legacy-profile");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -564,13 +532,13 @@ describe("mcp-config flag", () => {
     expect(args).not.toContain("--mcp-config");
   });
 
-  it("spawnClaude NEVER includes --strict-mcp-config in args", () => {
+  it("spawnClaude always includes --strict-mcp-config in args", () => {
     spawnClaude("claude-sonnet-4-5-20250929", undefined, {
       mcpConfigPath: "/tmp/mcp-config.json",
     });
     const args = (spawn as any).mock.calls[0][1] as string[];
 
-    expect(args).not.toContain("--strict-mcp-config");
+    expect(args).toContain("--strict-mcp-config");
   });
 
   it("backward compatibility - existing calls with only thinking/cwd still work", () => {
@@ -585,7 +553,7 @@ describe("mcp-config flag", () => {
     });
     const args = (spawn as any).mock.calls[0][1] as string[];
 
-    expect(args).toContain("--append-system-prompt-file");
+    expect(args).toContain("--system-prompt-file");
     expect(args).toContain("--effort");
     expect(args).not.toContain("--mcp-config");
     expect(args).toContain("--permission-prompt-tool");
@@ -718,72 +686,21 @@ describe("process registry", () => {
   });
 });
 
-describe("resume session flag", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("includes --resume followed by session ID when resumeSessionId is provided", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, {
-      resumeSessionId: "session-abc-123",
-    });
-    const args = (spawn as any).mock.calls[0][1] as string[];
-
-    expect(args).toContain("--resume");
-    const idx = args.indexOf("--resume");
-    expect(args[idx + 1]).toBe("session-abc-123");
-  });
-
-  it("does NOT include --resume when resumeSessionId is undefined", () => {
-    spawnClaude("claude-sonnet-4-5-20250929");
-    const args = (spawn as any).mock.calls[0][1] as string[];
-
-    expect(args).not.toContain("--resume");
-  });
-
-  it("includes both --resume and --effort when both are provided", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, {
-      resumeSessionId: "session-abc",
-      thinking: {
-        kind: "enabled",
-        budgetTokens: 16384,
-        effort: "high",
-        display: "summarized",
-      },
-    });
-    const args = (spawn as any).mock.calls[0][1] as string[];
-
-    expect(args).toContain("--resume");
-    expect(args).toContain("--effort");
-  });
-
-  it("includes both --resume and --mcp-config when both are provided", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, {
-      resumeSessionId: "session-abc",
-      mcpConfigPath: "/tmp/mcp.json",
-    });
-    const args = (spawn as any).mock.calls[0][1] as string[];
-
-    expect(args).toContain("--resume");
-    expect(args).toContain("--mcp-config");
-  });
-});
-
-describe("PI_CLAUDE_CLI_SETTINGS passthrough", () => {
-  const original = process.env.PI_CLAUDE_CLI_SETTINGS;
+describe("PI_CLAUDE_TETHER_SETTINGS passthrough", () => {
+  const original = process.env.PI_CLAUDE_TETHER_SETTINGS;
 
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   afterEach(() => {
-    if (original === undefined) delete process.env.PI_CLAUDE_CLI_SETTINGS;
-    else process.env.PI_CLAUDE_CLI_SETTINGS = original;
+    if (original === undefined) delete process.env.PI_CLAUDE_TETHER_SETTINGS;
+    else process.env.PI_CLAUDE_TETHER_SETTINGS = original;
     vi.clearAllMocks();
   });
 
   it("passes --settings when the env var is set (hook injection point)", () => {
-    process.env.PI_CLAUDE_CLI_SETTINGS = "/etc/example/claude-settings.json";
+    process.env.PI_CLAUDE_TETHER_SETTINGS = "/etc/example/claude-settings.json";
     spawnClaude("claude-haiku-4-5");
     const args = (spawn as any).mock.calls[0][1] as string[];
     expect(args).toContain("--settings");
@@ -793,7 +710,7 @@ describe("PI_CLAUDE_CLI_SETTINGS passthrough", () => {
   });
 
   it("omits --settings when unset", () => {
-    delete process.env.PI_CLAUDE_CLI_SETTINGS;
+    delete process.env.PI_CLAUDE_TETHER_SETTINGS;
     spawnClaude("claude-haiku-4-5");
     const args = (spawn as any).mock.calls[0][1] as string[];
     expect(args).not.toContain("--settings");
@@ -840,7 +757,7 @@ describe("cleanupSystemPromptFile", () => {
     (spawn as any).mockClear();
     spawnClaude("claude-sonnet-4-5-20250929", "test prompt");
     const args = (spawn as any).mock.calls[0][1] as string[];
-    const tmpFile = args[args.indexOf("--append-system-prompt-file") + 1];
+    const tmpFile = args[args.indexOf("--system-prompt-file") + 1];
     expect(existsSync(tmpFile)).toBe(true);
 
     cleanupSystemPromptFile();
@@ -855,100 +772,19 @@ describe("cleanupSystemPromptFile", () => {
   });
 });
 
-describe("strict MCP mode", () => {
-  const originalStrict = process.env.PI_CLAUDE_CLI_STRICT_MCP;
-  const originalHermetic = process.env.PI_CLAUDE_CLI_HERMETIC;
+describe("removed ephemeral variable is ignored", () => {
+  const originalEnv = process.env.PI_CLAUDE_TETHER_EPHEMERAL;
 
   afterEach(() => {
-    if (originalStrict === undefined)
-      delete process.env.PI_CLAUDE_CLI_STRICT_MCP;
-    else process.env.PI_CLAUDE_CLI_STRICT_MCP = originalStrict;
-    if (originalHermetic === undefined)
-      delete process.env.PI_CLAUDE_CLI_HERMETIC;
-    else process.env.PI_CLAUDE_CLI_HERMETIC = originalHermetic;
-  });
-
-  it("adds --strict-mcp-config WITHOUT touching --setting-sources", () => {
-    process.env.PI_CLAUDE_CLI_STRICT_MCP = "1";
-    delete process.env.PI_CLAUDE_CLI_HERMETIC;
-
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    const args = (spawn as any).mock.calls.at(-1)[1] as string[];
-
-    expect(args).toContain("--strict-mcp-config");
-    // The whole point of the split: CLAUDE.md auto-memory stays loaded.
-    expect(args).not.toContain("--setting-sources");
-  });
-
-  it("does not double up when hermetic mode is also enabled", () => {
-    process.env.PI_CLAUDE_CLI_STRICT_MCP = "1";
-    process.env.PI_CLAUDE_CLI_HERMETIC = "1";
-
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    const args = (spawn as any).mock.calls.at(-1)[1] as string[];
-
-    expect(args.filter((a) => a === "--strict-mcp-config")).toHaveLength(1);
-    expect(args).toContain("--setting-sources");
-  });
-
-  it("stays off when unset or falsy", () => {
-    delete process.env.PI_CLAUDE_CLI_STRICT_MCP;
-    delete process.env.PI_CLAUDE_CLI_HERMETIC;
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    let args = (spawn as any).mock.calls.at(-1)[1] as string[];
-    expect(args).not.toContain("--strict-mcp-config");
-
-    process.env.PI_CLAUDE_CLI_STRICT_MCP = "0";
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    args = (spawn as any).mock.calls.at(-1)[1] as string[];
-    expect(args).not.toContain("--strict-mcp-config");
-  });
-});
-
-describe("hermetic mode", () => {
-  const originalEnv = process.env.PI_CLAUDE_CLI_HERMETIC;
-
-  afterEach(() => {
-    if (originalEnv === undefined) delete process.env.PI_CLAUDE_CLI_HERMETIC;
-    else process.env.PI_CLAUDE_CLI_HERMETIC = originalEnv;
-  });
-
-  it("adds --strict-mcp-config and empty --setting-sources when enabled", () => {
-    process.env.PI_CLAUDE_CLI_HERMETIC = "1";
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    const args = (spawn as any).mock.calls.at(-1)[1] as string[];
-    expect(args).toContain("--strict-mcp-config");
-    const idx = args.indexOf("--setting-sources");
-    expect(idx).toBeGreaterThan(-1);
-    expect(args[idx + 1]).toBe("");
-  });
-
-  it("keeps the default environment when disabled or unset", () => {
-    delete process.env.PI_CLAUDE_CLI_HERMETIC;
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    let args = (spawn as any).mock.calls.at(-1)[1] as string[];
-    expect(args).not.toContain("--strict-mcp-config");
-    expect(args).not.toContain("--setting-sources");
-
-    process.env.PI_CLAUDE_CLI_HERMETIC = "0";
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    args = (spawn as any).mock.calls.at(-1)[1] as string[];
-    expect(args).not.toContain("--strict-mcp-config");
-  });
-});
-
-describe("ephemeral mode (PI_CLAUDE_CLI_EPHEMERAL)", () => {
-  const originalEnv = process.env.PI_CLAUDE_CLI_EPHEMERAL;
-
-  afterEach(() => {
-    if (originalEnv === undefined) delete process.env.PI_CLAUDE_CLI_EPHEMERAL;
-    else process.env.PI_CLAUDE_CLI_EPHEMERAL = originalEnv;
+    if (originalEnv === undefined)
+      delete process.env.PI_CLAUDE_TETHER_EPHEMERAL;
+    else process.env.PI_CLAUDE_TETHER_EPHEMERAL = originalEnv;
   });
 
   it.each(["1", "true", "YES"])(
-    "adds --no-session-persistence when set to %s",
+    "always disables persistence even with the removed variable set to %s",
     (value) => {
-      process.env.PI_CLAUDE_CLI_EPHEMERAL = value;
+      process.env.PI_CLAUDE_TETHER_EPHEMERAL = value;
       spawnClaude("claude-haiku-4-5", undefined, {});
       const args = (spawn as any).mock.calls.at(-1)[1] as string[];
       expect(args.filter((a) => a === "--no-session-persistence")).toHaveLength(
@@ -960,7 +796,7 @@ describe("ephemeral mode (PI_CLAUDE_CLI_EPHEMERAL)", () => {
   it("keeps --session-id alongside it, so the spawn stays keyed", () => {
     // The id still names the staged prompt file and the MCP config; the CLI
     // honours it without writing a transcript (verified on 2.1.280).
-    process.env.PI_CLAUDE_CLI_EPHEMERAL = "1";
+    process.env.PI_CLAUDE_TETHER_EPHEMERAL = "1";
     spawnClaude("claude-haiku-4-5", undefined, { newSessionId: "eph-1" });
     const args = (spawn as any).mock.calls.at(-1)[1] as string[];
     expect(args[args.indexOf("--session-id") + 1]).toBe("eph-1");
@@ -968,73 +804,15 @@ describe("ephemeral mode (PI_CLAUDE_CLI_EPHEMERAL)", () => {
     expect(args).not.toContain("--resume");
   });
 
-  it("stays off when unset or falsy: the default argv is unchanged", () => {
-    delete process.env.PI_CLAUDE_CLI_EPHEMERAL;
+  it("still disables persistence when the ephemeral knob is unset or falsy", () => {
+    delete process.env.PI_CLAUDE_TETHER_EPHEMERAL;
     spawnClaude("claude-haiku-4-5", undefined, { newSessionId: "s-1" });
     const unset = (spawn as any).mock.calls.at(-1)[1] as string[];
-    expect(unset).not.toContain("--no-session-persistence");
+    expect(unset).toContain("--no-session-persistence");
 
-    process.env.PI_CLAUDE_CLI_EPHEMERAL = "0";
+    process.env.PI_CLAUDE_TETHER_EPHEMERAL = "0";
     spawnClaude("claude-haiku-4-5", undefined, { newSessionId: "s-1" });
     const falsy = (spawn as any).mock.calls.at(-1)[1] as string[];
     expect(falsy).toEqual(unset);
-  });
-});
-
-describe("auto-compact window (PI_CLAUDE_CLI_AUTOCOMPACT)", () => {
-  const originalEnv = process.env.PI_CLAUDE_CLI_AUTOCOMPACT;
-
-  afterEach(() => {
-    if (originalEnv === undefined) delete process.env.PI_CLAUDE_CLI_AUTOCOMPACT;
-    else process.env.PI_CLAUDE_CLI_AUTOCOMPACT = originalEnv;
-  });
-
-  function lastAutocompactValue(): string | undefined {
-    const args = (spawn as any).mock.calls.at(-1)[1] as string[];
-    const idx = args.indexOf("--autocompact");
-    return idx === -1 ? undefined : args[idx + 1];
-  }
-
-  it("caps the window at 200k by default", () => {
-    delete process.env.PI_CLAUDE_CLI_AUTOCOMPACT;
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    expect(lastAutocompactValue()).toBe("200000");
-  });
-
-  it("honours a configured window, normalized to plain tokens", () => {
-    process.env.PI_CLAUDE_CLI_AUTOCOMPACT = "400k";
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    expect(lastAutocompactValue()).toBe("400000");
-  });
-
-  it("passes auto through for the CLI's own default", () => {
-    process.env.PI_CLAUDE_CLI_AUTOCOMPACT = "auto";
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    expect(lastAutocompactValue()).toBe("auto");
-  });
-
-  it("omits the flag entirely when off (older CLIs reject unknown flags)", () => {
-    process.env.PI_CLAUDE_CLI_AUTOCOMPACT = "off";
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    expect(lastAutocompactValue()).toBeUndefined();
-  });
-
-  it("rides resumed spawns too — the CLI keeps no flags across --resume", () => {
-    delete process.env.PI_CLAUDE_CLI_AUTOCOMPACT;
-    spawnClaude("claude-haiku-4-5", undefined, {
-      resumeSessionId: "00000000-1111-4111-8111-111111111111",
-    });
-    const args = (spawn as any).mock.calls.at(-1)[1] as string[];
-    expect(args).toContain("--resume");
-    expect(lastAutocompactValue()).toBe("200000");
-  });
-
-  it("never lets an invalid value reach the CLI (it would refuse to start)", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    process.env.PI_CLAUDE_CLI_AUTOCOMPACT = "50k";
-    spawnClaude("claude-haiku-4-5", undefined, {});
-    expect(lastAutocompactValue()).toBe("200000");
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
   });
 });

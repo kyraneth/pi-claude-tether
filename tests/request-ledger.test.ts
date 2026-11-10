@@ -58,8 +58,8 @@ import { imageHeader, apiImage } from "./receipt-image-fixture";
 
 const model = {
   id: "claude-haiku-4-5",
-  api: "pi-claude-cli",
-  provider: "pi-claude-cli",
+  api: "pi-claude-tether",
+  provider: "pi-claude-tether",
   cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
 } as any;
 // Hand-written synthetic three-cycle stream; see multi-cycle.test.ts.
@@ -137,46 +137,128 @@ describe("request measurement at adapter stream ingress", () => {
     proc.stdout = new PassThrough();
     proc.stdin = { write: vi.fn(), end: vi.fn() };
     proc.kill = vi.fn();
-    const ledger = new RequestLedger({ piSessionId: "mismatch", cliSessionId: "mismatch-cli",
-      requestedModel: model.id, pid: 4242, spawnCause: ["firstProcess"], systemPromptBytes: 0, toolSchemaBytes: 0 });
-    const cli = new CliProcess(proc, { cliSessionId: "mismatch-cli", signature: "sig",
-      allowHandoff: true, getStderr: () => "", ledger });
+    const ledger = new RequestLedger({
+      piSessionId: "mismatch",
+      cliSessionId: "mismatch-cli",
+      requestedModel: model.id,
+      pid: 4242,
+      spawnCause: ["firstProcess"],
+      systemPromptBytes: 0,
+      toolSchemaBytes: 0,
+    });
+    const cli = new CliProcess(proc, {
+      cliSessionId: "mismatch-cli",
+      signature: "sig",
+      allowHandoff: true,
+      getStderr: () => "",
+      ledger,
+    });
     cli.writeUser("go");
     cli.noteHandoffToolUse("t1");
-    const receipt = cli.deliverHandoffResult("t1", { content: [{ type: "text", text: LEAK }], isError: true });
-    send(proc, [{ type: "user", message: { role: "user", content: [
-      { type: "tool_result", tool_use_id: "t1", is_error: true, content: LEAK.slice(1) },
-    ] } }]);
+    const receipt = cli.deliverHandoffResult("t1", {
+      content: [{ type: "text", text: LEAK }],
+      isError: true,
+    });
+    send(proc, [
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "t1",
+              is_error: true,
+              content: LEAK.slice(1),
+            },
+          ],
+        },
+      },
+    ]);
     expect(await receipt).toBe(false);
     const all = await rows();
-    const row = all.find(r => r.type === "retire");
+    const row = all.find((r) => r.type === "retire");
     expect(row.reasons).toEqual(["handoff_receipt_mismatch"]);
-    expect(row.handoffReceiptMismatch).toMatchObject({ toolUseId: "t1",
+    expect(row.handoffReceiptMismatch).toMatchObject({
+      toolUseId: "t1",
       kinds: ["representation", "content_length", "content_hash"],
-      expected: { representation: "blocks", blockKinds: ["text"], textChars: LEAK.length, isError: true },
-      observed: { representation: "string", blockKinds: ["text"], textChars: LEAK.length - 1, isError: true } });
-    expect(row.handoffReceiptMismatch.expected.rawSha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(row.handoffReceiptMismatch.expected.canonicalSha256).not.toEqual(row.handoffReceiptMismatch.observed.canonicalSha256);
+      expected: {
+        representation: "blocks",
+        blockKinds: ["text"],
+        textChars: LEAK.length,
+        isError: true,
+      },
+      observed: {
+        representation: "string",
+        blockKinds: ["text"],
+        textChars: LEAK.length - 1,
+        isError: true,
+      },
+    });
+    expect(row.handoffReceiptMismatch.expected.rawSha256).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
+    expect(row.handoffReceiptMismatch.expected.canonicalSha256).not.toEqual(
+      row.handoffReceiptMismatch.observed.canonicalSha256,
+    );
     assertMetadataOnly(all);
     expect(JSON.stringify(all)).not.toContain(LEAK.slice(1));
   });
   it("persists image header diagnostics without image bytes or unrecognized media strings", async () => {
     const proc: any = new EventEmitter();
-    proc.stdout = new PassThrough(); proc.stdin = { write: vi.fn(), end: vi.fn() }; proc.kill = vi.fn();
-    const ledger = new RequestLedger({ piSessionId: "image-mismatch", cliSessionId: "image-cli",
-      requestedModel: model.id, pid: 4242, spawnCause: ["firstProcess"], systemPromptBytes: 0, toolSchemaBytes: 0 });
-    const cli = new CliProcess(proc, { cliSessionId: "image-cli", signature: "sig", allowHandoff: true, getStderr: () => "", ledger });
+    proc.stdout = new PassThrough();
+    proc.stdin = { write: vi.fn(), end: vi.fn() };
+    proc.kill = vi.fn();
+    const ledger = new RequestLedger({
+      piSessionId: "image-mismatch",
+      cliSessionId: "image-cli",
+      requestedModel: model.id,
+      pid: 4242,
+      spawnCause: ["firstProcess"],
+      systemPromptBytes: 0,
+      toolSchemaBytes: 0,
+    });
+    const cli = new CliProcess(proc, {
+      cliSessionId: "image-cli",
+      signature: "sig",
+      allowHandoff: true,
+      getStderr: () => "",
+      ledger,
+    });
     const original = imageHeader("png", 2000, 1000);
-    const malformed = apiImage({ ...imageHeader("jpeg", 1000, 500), mimeType: LEAK });
-    cli.writeUser("go"); cli.noteHandoffToolUse("t1");
+    const malformed = apiImage({
+      ...imageHeader("jpeg", 1000, 500),
+      mimeType: LEAK,
+    });
+    cli.writeUser("go");
+    cli.noteHandoffToolUse("t1");
     const receipt = cli.deliverHandoffResult("t1", { content: [original] });
-    send(proc, [{ type: "user", message: { role: "user", content: [
-      { type: "tool_result", tool_use_id: "t1", content: [malformed] },
-    ] } }]);
+    send(proc, [
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "t1", content: [malformed] },
+          ],
+        },
+      },
+    ]);
     expect(await receipt).toBe(false);
-    const all = await rows(); const metadata = all.find(r => r.type === "retire").handoffReceiptMismatch;
-    expect(metadata.expected.images).toEqual([{ blockIndex: 0, declaredMediaType: "image/png", header: { mediaType: "image/png", width: 2000, height: 1000 } }]);
-    expect(metadata.observed.images).toEqual([{ blockIndex: 0, declaredMediaType: "other", header: null }]);
+    const all = await rows();
+    const metadata = all.find(
+      (r) => r.type === "retire",
+    ).handoffReceiptMismatch;
+    expect(metadata.expected.images).toEqual([
+      {
+        blockIndex: 0,
+        declaredMediaType: "image/png",
+        header: { mediaType: "image/png", width: 2000, height: 1000 },
+      },
+    ]);
+    expect(metadata.observed.images).toEqual([
+      { blockIndex: 0, declaredMediaType: "other", header: null },
+    ]);
     assertMetadataOnly(all);
     expect(JSON.stringify(all)).not.toContain(LEAK);
     expect(JSON.stringify(all)).not.toContain(original.data);
@@ -308,7 +390,6 @@ describe("request measurement at adapter stream ingress", () => {
   });
 
   it("keeps handoff/turn episode identities and cumulative results separate on one process, including detached frames", async () => {
-    delete process.env.PI_CLAUDE_CLI_CONTEXT;
     const schemaPath = join(dir, "schema.json");
     const schema = JSON.stringify([
       { name: "read", description: LEAK, inputSchema: { type: "object" } },
@@ -361,10 +442,26 @@ describe("request measurement at adapter stream ingress", () => {
     await vi.advanceTimersByTimeAsync(0);
     const args = vi.mocked(spawn).mock.calls[0][1] as string[];
     dispatchHandoffCall(args[args.indexOf("--session-id") + 1], {
-      toolUseId: tool.id, name: "read", arguments: {},
-      respond: r => send(proc, [{ type: "user", message: { role: "user", content: [
-        { type: "tool_result", tool_use_id: tool.id, content: r.content, is_error: !!r.isError },
-      ] } }]),
+      toolUseId: tool.id,
+      name: "read",
+      arguments: {},
+      respond: (r) =>
+        send(proc, [
+          {
+            type: "user",
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: tool.id,
+                  content: r.content,
+                  is_error: !!r.isError,
+                },
+              ],
+            },
+          },
+        ]),
     });
     send(proc, recorded.slice(firstStop + 1));
     await vi.advanceTimersByTimeAsync(0);
@@ -405,9 +502,7 @@ describe("request measurement at adapter stream ingress", () => {
         .filter((row) => row.type === "result")
         .map((row) => row.cumulativeModelUsage[1].output),
     ).toEqual([18, 23]);
-    expect(requests(all).map((row) => row.usage.output)).toEqual([
-      5, 6, 7, 5,
-    ]);
+    expect(requests(all).map((row) => row.usage.output)).toEqual([5, 6, 7, 5]);
     expect(
       all.filter(
         (row) => row.type === "rate_limit" && row.utilization === 0.42,
@@ -557,36 +652,6 @@ describe("request measurement at adapter stream ingress", () => {
     expect(
       (await rows()).filter((row) => row.type === "process_exit"),
     ).toHaveLength(1);
-  });
-
-  it("keeps inactivity distinct from wall-clock expiry while waiting on native agents", async () => {
-    const stream = streamViaCli(
-      model,
-      { messages: [{ role: "user", content: "go" }] },
-      options("agent-silence"),
-    );
-    await vi.advanceTimersByTimeAsync(0);
-    send(vi.mocked(spawn).mock.results[0].value, [
-      {
-        type: "system",
-        subtype: "task_started",
-        task_id: "agent",
-        tool_use_id: "agent-tool",
-        task_type: "local_agent",
-        description: LEAK,
-      },
-      ...minimal,
-    ]);
-    await vi.advanceTimersByTimeAsync(0);
-    // Existing inactivity default fires before the existing agent-wait deadline.
-    await vi.advanceTimersByTimeAsync(300_000);
-    await stream.result();
-    expect(
-      (await rows())
-        .filter((row) => row.type === "retire")
-        .map((row) => row.reasons),
-    ).toEqual([["inactivity"]]);
-    assertMetadataOnly(await rows());
   });
 
   it("records an unrequested process exit and inactivity retirement", async () => {

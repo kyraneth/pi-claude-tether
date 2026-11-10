@@ -1,34 +1,25 @@
 /**
- * LIVE: the persistent CLI process against the real Claude CLI. Spends real
- * tokens; gated on PI_CLAUDE_CLI_LIVE=1 like tests/live-observer.test.ts.
- *
- *   PI_CLAUDE_CLI_LIVE=1 npx vitest run tests/live-persistent.test.ts
- *
- * Proves the two cache properties 0.7.0 exists for:
- * 1. a custom-tool handoff continues on the SAME process (one MCP connect for
- *    the whole turn) and the continuation reads its prefix from cache;
- * 2. a git commit between two user turns does not re-bill the context,
- *    because the CLI's system prompt (git snapshot included) is built once.
- * And, for contrast, that the pre-0.7.0 path (fresh process per turn) does
- * re-bill it after the same commit.
+ * Opt-in real CLI proof of Pi-owned warm-process handoff and full-history replay.
+ * Uses scratch workspaces; never loads native Claude project context.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readdirSync } from "node:fs";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { streamViaCli } from "../src/provider";
+import * as processManager from "../src/process-manager";
 import { startHandoffBroker, stopHandoffBroker } from "../src/handoff-broker";
 import { retireAllCliProcesses } from "../src/cli-process";
 
-const LIVE = process.env.PI_CLAUDE_CLI_LIVE === "1";
+const LIVE = process.env.PI_OWNED_LIVE === "1";
 
 const model = {
   id: "claude-haiku-4-5",
   name: "Claude Haiku 4.5",
-  api: "pi-claude-cli",
-  provider: "pi-claude-cli",
+  api: "pi-claude-tether",
+  provider: "pi-claude-tether",
   reasoning: true,
   input: "text",
   cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
@@ -54,22 +45,25 @@ function runTurn(context: any, options: any): Promise<any> {
 const ourAssistant = (content: any) => ({
   role: "assistant",
   content,
-  provider: "pi-claude-cli",
-  api: "pi-claude-cli",
+  provider: "pi-claude-tether",
+  api: "pi-claude-tether",
 });
 
 describe.skipIf(!LIVE)("live: persistent CLI process", () => {
+  let cliSpawn: import("vitest").MockInstance<
+    typeof processManager.spawnClaude
+  >;
   let cwd: string;
   let stateDir: string;
   let schemaPath: string;
   let socketPath: string;
 
   beforeAll(async () => {
+    cliSpawn = vi.spyOn(processManager, "spawnClaude");
     cwd = mkdtempSync(join(tmpdir(), "pcc-live-persist-"));
     execSync("git init -q && git commit -q --allow-empty -m init", { cwd });
     stateDir = mkdtempSync(join(tmpdir(), "pcc-live-state-"));
-    process.env.PI_CLAUDE_CLI_STATE_DIR = stateDir;
-    process.env.PI_CLAUDE_CLI_STRICT_MCP = "1";
+    process.env.PI_CLAUDE_TETHER_STATE_DIR = stateDir;
     schemaPath = join(cwd, "schema.json");
     writeFileSync(
       schemaPath,
@@ -91,38 +85,15 @@ describe.skipIf(!LIVE)("live: persistent CLI process", () => {
   afterAll(async () => {
     await retireAllCliProcesses();
     stopHandoffBroker();
-    delete process.env.PI_CLAUDE_CLI_STATE_DIR;
-    delete process.env.PI_CLAUDE_CLI_STRICT_MCP;
+    delete process.env.PI_CLAUDE_TETHER_STATE_DIR;
+    cliSpawn.mockRestore();
     rmSync(cwd, { recursive: true, force: true });
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  /**
-   * CLI processes started for this cwd = MCP connection logs written for it.
-   * The CLI mangles the cwd into a directory name; match on the unique tmp
-   * basename rather than reimplementing the mangling.
-   */
-  function processCount(): number {
-    const root = join(
-      process.env.HOME ?? "",
-      "Library",
-      "Caches",
-      "claude-cli-nodejs",
-    );
-    const key = cwd
-      .split("/")
-      .pop()!
-      .replace(/[^A-Za-z0-9]/g, "-");
-    try {
-      const dir = readdirSync(root).find((d) => d.endsWith(key));
-      if (!dir) return 0;
-      return readdirSync(join(root, dir, "mcp-logs-custom-tools")).length;
-    } catch {
-      return 0;
-    }
-  }
+  const processCount = () => cliSpawn.mock.calls.length;
 
-  it("keeps one process through a handoff and across a commit, and stays cache-warm", async () => {
+  it("keeps one Pi-owned process through a handoff and across a commit", async () => {
     const piSessionId = randomUUID();
     const opts = {
       sessionId: piSessionId,
@@ -132,8 +103,18 @@ describe.skipIf(!LIVE)("live: persistent CLI process", () => {
     const before = processCount();
 
     // Turn 1: the model must call the custom tool → handoff to pi.
+    // A tiny prompt is below Anthropic's minimum cacheable prompt length for
+    // this model (a platform limit) and caches nothing, which made the cache
+    // assertions unreachable. This fixture is sized past that minimum so the
+    // first turn writes a cached prefix that the next turns can read.
     const ctx1 = {
-      systemPrompt: "You are terse.",
+      systemPrompt: [
+        "You are terse.",
+        ...Array.from(
+          { length: 600 },
+          (_, i) => `Reference note ${i}: answer only what was asked.`,
+        ),
+      ].join("\n"),
       messages: [
         {
           role: "user",
@@ -168,11 +149,17 @@ describe.skipIf(!LIVE)("live: persistent CLI process", () => {
     expect(t2.done.reason).toBe("stop");
     const afterHandoff = processCount();
     expect(afterHandoff - before).toBe(1); // ONE process so far
-    // The continuation read the whole prefix back from cache.
-    expect(t2.done.message.usage.cacheRead).toBeGreaterThan(10_000);
-    expect(t2.done.message.usage.cacheWrite).toBeLessThan(2_000);
+    // The fixture is cacheable: turn 1 wrote a prefix (guards a vacuous pass).
+    const t1Prefix =
+      t1.done.message.usage.cacheRead + t1.done.message.usage.cacheWrite;
+    expect(t1Prefix).toBeGreaterThan(0);
+    // The handoff continuation reads the whole warm prefix back, and writes
+    // only what is new since then, never a rewrite of what it already had.
+    expect(t2.done.message.usage.cacheRead).toBeGreaterThanOrEqual(t1Prefix);
+    expect(t2.done.message.usage.cacheWrite).toBeLessThan(t1Prefix);
+    expect(cliSpawn.mock.calls.at(-1)?.[1]).toContain("You are terse.");
 
-    // A commit between turns: with a live process the snapshot is not rebuilt.
+    // A native project change cannot replace the explicit Pi context.
     execSync("git commit -q --allow-empty -m between", { cwd });
     const ctx3 = {
       ...ctx1,
@@ -185,17 +172,21 @@ describe.skipIf(!LIVE)("live: persistent CLI process", () => {
     const t3 = await runTurn(ctx3, opts);
     expect(t3.done.reason).toBe("stop");
     expect(processCount() - before).toBe(1); // STILL one process
-    expect(t3.done.message.usage.cacheRead).toBeGreaterThan(10_000);
-    expect(t3.done.message.usage.cacheWrite).toBeLessThan(2_000);
+    const t2Prefix =
+      t2.done.message.usage.cacheRead + t2.done.message.usage.cacheWrite;
+    expect(t3.done.message.usage.cacheRead).toBeGreaterThanOrEqual(t2Prefix);
+    expect(t3.done.message.usage.cacheWrite).toBeLessThan(t2Prefix);
+    expect(cliSpawn.mock.calls.at(-1)?.[1]).toContain("You are terse.");
     console.log(
       `[live] handoff continuation: read=${t2.done.message.usage.cacheRead} write=${t2.done.message.usage.cacheWrite}; ` +
         `turn after commit: read=${t3.done.message.usage.cacheRead} write=${t3.done.message.usage.cacheWrite}; processes=${processCount() - before}`,
     );
   }, 240_000);
 
-  it("contrast: the pre-0.7.0 path (fresh process per turn) re-bills the context after a commit", async () => {
-    process.env.PI_CLAUDE_CLI_KEEPALIVE_MS = "0";
+  it("replays Pi history on fresh processes without rediscovering native project context", async () => {
+    process.env.PI_CLAUDE_TETHER_KEEPALIVE_MS = "0";
     try {
+      const before = processCount();
       const piSessionId = randomUUID();
       const opts = {
         sessionId: piSessionId,
@@ -216,7 +207,9 @@ describe.skipIf(!LIVE)("live: persistent CLI process", () => {
         ],
       };
       const t2 = await runTurn(ctx2, opts); // fresh process, nothing changed: warm
-      expect(t2.done.message.usage.cacheWrite).toBeLessThan(2_000);
+      expect(t2.done.reason).toBe("stop");
+      expect(processCount() - before).toBe(2);
+      const initialPrompt = cliSpawn.mock.calls.at(-1)?.[1];
       execSync("git commit -q --allow-empty -m between2", { cwd });
       const ctx3 = {
         ...ctx1,
@@ -226,13 +219,18 @@ describe.skipIf(!LIVE)("live: persistent CLI process", () => {
           { role: "user", content: "Reply with only: ok3" },
         ],
       };
-      const t3 = await runTurn(ctx3, opts); // fresh process after a commit: the snapshot changed
+      const t3 = await runTurn(ctx3, opts); // fresh process after a commit: Pi still supplies the same prompt
       console.log(
-        `[live] legacy after commit: read=${t3.done.message.usage.cacheRead} write=${t3.done.message.usage.cacheWrite}`,
+        `[live] Pi replay after commit: read=${t3.done.message.usage.cacheRead} write=${t3.done.message.usage.cacheWrite}`,
       );
-      expect(t3.done.message.usage.cacheWrite).toBeGreaterThan(2_000);
+      expect(t3.done.reason).toBe("stop");
+      expect(processCount() - before).toBe(3);
+      expect(cliSpawn.mock.calls.at(-1)?.[1]).toBe(initialPrompt);
+      for (const call of cliSpawn.mock.calls.slice(before)) {
+        expect(call[2]).not.toHaveProperty("resumeSessionId");
+      }
     } finally {
-      delete process.env.PI_CLAUDE_CLI_KEEPALIVE_MS;
+      delete process.env.PI_CLAUDE_TETHER_KEEPALIVE_MS;
     }
   }, 240_000);
 });

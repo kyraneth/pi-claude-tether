@@ -35,7 +35,6 @@ require("node:net").createServer().listen(${JSON.stringify(join(home, "wait.sock
     );
     vi.stubEnv("HOME", home);
     vi.stubEnv("PATH", bin);
-    vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "pi");
     const exec = vi.mocked(spawnProbe);
     exec.mockClear();
     const watchers: ReturnType<typeof watch>[] = [];
@@ -100,7 +99,6 @@ require("node:net").createServer().listen(${JSON.stringify(join(home, "wait.sock
     );
     vi.stubEnv("HOME", home);
     vi.stubEnv("PATH", bin);
-    vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "pi");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const watchers: ReturnType<typeof watch>[] = [];
     const marker = (name: string) =>

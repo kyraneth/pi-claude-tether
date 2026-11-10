@@ -8,7 +8,7 @@ import { cliProbe } from "./cli-probe-fixture";
 vi.mock("cross-spawn", async () => {
   const { cliProbe } = await import("./cli-probe-fixture");
   return {
-    spawn: vi.fn(() => cliProbe("1.0.0")),
+    spawn: vi.fn(() => cliProbe("2.1.283 (Claude Code)")),
     default: vi.fn(() => {
       const proc = new EventEmitter();
       const stdin = { write: vi.fn(), end: vi.fn() };
@@ -30,7 +30,7 @@ vi.mock("cross-spawn", async () => {
 
 // Mock child_process.execSync for validateCliPresence/validateCliAuth
 vi.mock("node:child_process", () => ({
-  execSync: vi.fn(() => Buffer.from("1.0.0")),
+  execSync: vi.fn(() => Buffer.from("2.1.283 (Claude Code)")),
 }));
 
 // Mock @earendil-works/pi-ai
@@ -87,7 +87,7 @@ import { resetCliProcessesForTests } from "../src/cli-process";
 import { dispatchHandoffCall } from "../src/handoff-broker";
 
 describe("provider registration (default export)", () => {
-  it("registers provider with ID pi-claude-cli", async () => {
+  it("registers provider with ID pi-claude-tether", async () => {
     const registerProvider = vi.fn();
     const mockPi = {
       registerProvider,
@@ -100,7 +100,7 @@ describe("provider registration (default export)", () => {
     mod.default(mockPi);
 
     expect(registerProvider).toHaveBeenCalledTimes(1);
-    expect(registerProvider.mock.calls[0][0]).toBe("pi-claude-cli");
+    expect(registerProvider.mock.calls[0][0]).toBe("pi-claude-tether");
   });
 
   it("registers provider with correct config shape", async () => {
@@ -115,9 +115,9 @@ describe("provider registration (default export)", () => {
     mod.default(mockPi);
 
     const config = registerProvider.mock.calls[0][1];
-    expect(config.baseUrl).toBe("pi-claude-cli");
+    expect(config.baseUrl).toBe("pi-claude-tether");
     expect(config.apiKey).toBe("unused");
-    expect(config.api).toBe("pi-claude-cli");
+    expect(config.api).toBe("pi-claude-tether");
     expect(config.models).toBeDefined();
     expect(Array.isArray(config.models)).toBe(true);
     expect(config.streamSimple).toBeDefined();
@@ -196,8 +196,6 @@ describe("streamViaCli", () => {
   });
 
   it("applies Pi's provider payload replacement before CLI prompt and MCP catalog", async () => {
-    const previousContext = process.env.PI_CLAUDE_CLI_CONTEXT;
-    process.env.PI_CLAUDE_CLI_CONTEXT = "pi";
     (spawnProbe as any).mockImplementationOnce(() => cliProbe("2.1.283"));
     const model = mockModels[0] as any;
     const onPayload = vi.fn(async () => ({
@@ -244,8 +242,6 @@ describe("streamViaCli", () => {
     expect(
       (await import("node:fs")).readFileSync(promptFile, "utf8"),
     ).toContain("REPLACED_SYSTEM_MARKER");
-    if (previousContext === undefined) delete process.env.PI_CLAUDE_CLI_CONTEXT;
-    else process.env.PI_CLAUDE_CLI_CONTEXT = previousContext;
   });
 
   it("recognizes both new-process and warm-process response boundaries", () => {
@@ -312,8 +308,6 @@ describe("streamViaCli", () => {
   });
 
   it("fails closed without publishing body when Pi's response observer rejects", async () => {
-    const previousContext = process.env.PI_CLAUDE_CLI_CONTEXT;
-    process.env.PI_CLAUDE_CLI_CONTEXT = "pi";
     (spawnProbe as any).mockImplementationOnce(() => cliProbe("2.1.283"));
     const model = mockModels[0] as any;
     const result = streamViaCli(
@@ -349,14 +343,11 @@ describe("streamViaCli", () => {
       result._events.find((event: any) => event.type === "error")?.error
         ?.errorMessage,
     ).toContain("observer rejected");
-    if (previousContext === undefined) delete process.env.PI_CLAUDE_CLI_CONTEXT;
-    else process.env.PI_CLAUDE_CLI_CONTEXT = previousContext;
   });
 
   it.each([false, true])(
     "keeps valid MCP calls pending and preserves post-handoff frames during a slow response hook (warm=%s)",
     async (warm) => {
-      vi.stubEnv("PI_CLAUDE_CLI_CONTEXT", "pi");
       (spawnProbe as any).mockImplementation(() => cliProbe("2.1.283"));
       try {
         const model = mockModels[0] as any;
@@ -390,7 +381,7 @@ describe("streamViaCli", () => {
             (event: any) => event.type === "done",
           );
           context.messages.push(
-            { ...done.message, provider: "pi-claude-cli" },
+            { ...done.message, provider: "pi-claude-tether" },
             { role: "user", content: "next" },
           );
         }
@@ -485,7 +476,7 @@ describe("streamViaCli", () => {
         );
         const messages = [
           ...context.messages,
-          { ...done.message, provider: "pi-claude-cli" },
+          { ...done.message, provider: "pi-claude-tether" },
           {
             role: "toolResult",
             toolCallId: "tool-hook",
@@ -632,10 +623,12 @@ describe("streamViaCli", () => {
 
     const mockStream = MockAssistantMessageEventStream.mock.instances[0];
     const doneEvent = mockStream._events.find(
-      (e: any) => e.type === "done" && e.message,
+      (e: any) => e.type === "error" && e.error,
     );
     expect(doneEvent).toBeDefined();
-    expect(doneEvent.message.content).toBeDefined();
+    expect(doneEvent.error.content).toBeDefined();
+    expect(doneEvent.error.stopReason).toBe("error");
+    expect(doneEvent.error.errorMessage).toEqual(expect.any(String));
     expect(mockStream.end).toHaveBeenCalled();
   });
 
@@ -686,9 +679,21 @@ describe("streamViaCli", () => {
     expect(written).toContain('"interrupt"');
     expect(proc.kill).not.toHaveBeenCalled();
 
-    // If the CLI never winds down, the 2s backstop force-kills.
-    await vi.advanceTimersByTimeAsync(2100);
-    expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
+    // Pi-owned abort drains the CLI's interrupt result; no disk resume or kill.
+    proc.stdout.write(
+      JSON.stringify({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+      }) + "\n",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(proc.kill).not.toHaveBeenCalled();
+    const terminal =
+      MockAssistantMessageEventStream.mock.instances[0]._events.find(
+        (e: any) => e.type === "error",
+      );
+    expect(terminal.error.stopReason).toBe("aborted");
 
     proc.stdout.end();
     await vi.advanceTimersByTimeAsync(100);
@@ -760,7 +765,7 @@ describe("streamViaCli", () => {
     expect(controlResponse).toBeDefined();
     const parsed = JSON.parse(controlResponse[0]);
     expect(parsed.response.request_id).toBe("req_123");
-    expect(parsed.response.response.behavior).toBe("allow");
+    expect(parsed.response.response.behavior).toBe("deny");
   });
 
   describe("thinking wiring", () => {
@@ -989,11 +994,18 @@ describe("streamViaCli", () => {
       for (const line of lines) {
         proc.stdout.write(line + "\n");
       }
-      // End stdout to let readline close
+      // Complete the observed frame sequence with a terminal result.
+      proc.stdout.write(
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }) + "\n",
+      );
       proc.stdout.end();
       await vi.advanceTimersByTimeAsync(100);
 
-      // Observer mode: no kill, no interrupt — the CLI runs the tool itself.
+      // Unexpected native frames are diagnostics, never a second Pi execution.
       expect(proc.kill).not.toHaveBeenCalled();
       const written = (proc.stdin.write as any).mock.calls
         .map((c: any) => String(c[0]))
@@ -1004,8 +1016,7 @@ describe("streamViaCli", () => {
       const mockStream = MockAssistantMessageEventStream.mock.instances[0];
       const eventTypes = mockStream._events.map((e: any) => e.type);
       expect(eventTypes).not.toContain("toolcall_start");
-      // done arrives after stdout ends with no result (stream closed), via
-      // the post-close push.
+      // A validated terminal result ends the episode.
       expect(eventTypes).toContain("done");
     });
 
@@ -1062,7 +1073,6 @@ describe("streamViaCli", () => {
       for (const line of lines) {
         proc.stdout.write(line + "\n");
       }
-      proc.stdout.end();
       await vi.advanceTimersByTimeAsync(100);
 
       // A clean interrupt was asked for on stdin…
@@ -1071,8 +1081,7 @@ describe("streamViaCli", () => {
         .join("");
       expect(written).toContain('"control_request"');
       expect(written).toContain('"interrupt"');
-      // …and the process was NOT SIGKILLed mid-turn (a kill truncates the CLI
-      // transcript and poisons every later resume with synthetic filler).
+      // The interrupted process must not be killed mid-handoff.
       expect(proc.kill).not.toHaveBeenCalled();
 
       // The interrupted turn's result envelope is expected, not an error.
@@ -1478,7 +1487,7 @@ describe("streamViaCli", () => {
   });
 
   describe("subprocess error handling", () => {
-    it("pushes done event when subprocess emits error (e.g. spawn failure)", async () => {
+    it("pushes a Pi assistant error when subprocess emits error (e.g. spawn failure)", async () => {
       const model = mockModels[0] as any;
       const context = {
         messages: [{ role: "user", content: "Hello" }],
@@ -1496,10 +1505,12 @@ describe("streamViaCli", () => {
 
       const mockStream = MockAssistantMessageEventStream.mock.instances[0];
       const doneEvent = mockStream._events.find(
-        (e: any) => e.type === "done" && e.message,
+        (e: any) => e.type === "error" && e.error,
       );
       expect(doneEvent).toBeDefined();
-      expect(doneEvent.message.content).toBeDefined();
+      expect(doneEvent.error.content).toBeDefined();
+      expect(doneEvent.error.stopReason).toBe("error");
+      expect(doneEvent.error.errorMessage).toEqual(expect.any(String));
       expect(mockStream.end).toHaveBeenCalled();
     });
 
@@ -1521,10 +1532,12 @@ describe("streamViaCli", () => {
 
       const mockStream = MockAssistantMessageEventStream.mock.instances[0];
       const doneEvent = mockStream._events.find(
-        (e: any) => e.type === "done" && e.message,
+        (e: any) => e.type === "error" && e.error,
       );
       expect(doneEvent).toBeDefined();
-      expect(doneEvent.message.content).toBeDefined();
+      expect(doneEvent.error.content).toBeDefined();
+      expect(doneEvent.error.stopReason).toBe("error");
+      expect(doneEvent.error.errorMessage).toEqual(expect.any(String));
       expect(mockStream.end).toHaveBeenCalled();
     });
 
@@ -1547,10 +1560,12 @@ describe("streamViaCli", () => {
 
       const mockStream = MockAssistantMessageEventStream.mock.instances[0];
       const doneEvent = mockStream._events.find(
-        (e: any) => e.type === "done" && e.message,
+        (e: any) => e.type === "error" && e.error,
       );
       expect(doneEvent).toBeDefined();
-      expect(doneEvent.message.content).toBeDefined();
+      expect(doneEvent.error.content).toBeDefined();
+      expect(doneEvent.error.stopReason).toBe("error");
+      expect(doneEvent.error.errorMessage).toEqual(expect.any(String));
     });
 
     it("does not push error on normal close (code 0)", async () => {
@@ -1593,7 +1608,7 @@ describe("streamViaCli", () => {
       expect(errorEvent).toBeUndefined();
     });
 
-    it("does not push error after break-early (broken flag)", async () => {
+    it("does not push an error after handing a Pi tool back", async () => {
       const model = mockModels[0] as any;
       const context = {
         messages: [{ role: "user", content: "Read a file" }],
@@ -1621,7 +1636,7 @@ describe("streamViaCli", () => {
             content_block: {
               type: "tool_use",
               id: "tool_1",
-              name: "Read",
+              name: "mcp__custom-tools__read",
               input: "",
             },
           },
@@ -1648,7 +1663,16 @@ describe("streamViaCli", () => {
       }
       await vi.advanceTimersByTimeAsync(50);
 
-      // Now emit close with non-zero code (from SIGKILL)
+      // The CLI acknowledges the interrupt before close.
+      proc.stdout.write(
+        JSON.stringify({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }) + "\n",
+      );
+      await vi.advanceTimersByTimeAsync(0);
       proc.emit("close", null, "SIGKILL");
       proc.stdout.end();
       await vi.advanceTimersByTimeAsync(100);
@@ -1678,10 +1702,12 @@ describe("streamViaCli", () => {
 
       const mockStream = MockAssistantMessageEventStream.mock.instances[0];
       const doneEvent = mockStream._events.find(
-        (e: any) => e.type === "done" && e.message,
+        (e: any) => e.type === "error" && e.error,
       );
       expect(doneEvent).toBeDefined();
-      expect(doneEvent.message.content).toBeDefined();
+      expect(doneEvent.error.content).toBeDefined();
+      expect(doneEvent.error.stopReason).toBe("error");
+      expect(doneEvent.error.errorMessage).toEqual(expect.any(String));
       expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
 
       // Clean up - end stdout so readline closes
@@ -1720,7 +1746,7 @@ describe("streamViaCli", () => {
 
       const mockStream = MockAssistantMessageEventStream.mock.instances[0];
       const doneEvent = mockStream._events.find(
-        (e: any) => e.type === "done" && e.message,
+        (e: any) => e.type === "error" && e.error,
       );
       expect(doneEvent).toBeUndefined();
 
@@ -1728,10 +1754,10 @@ describe("streamViaCli", () => {
       await vi.advanceTimersByTimeAsync(10_000);
 
       const doneEvent2 = mockStream._events.find(
-        (e: any) => e.type === "done" && e.message,
+        (e: any) => e.type === "error" && e.error,
       );
       expect(doneEvent2).toBeDefined();
-      expect(doneEvent2.message.content).toBeDefined();
+      expect(doneEvent2.error.content).toBeDefined();
 
       // Clean up
       proc.stdout.end();
@@ -1781,53 +1807,23 @@ describe("streamViaCli", () => {
     });
   });
 
-  describe("abort handler fix", () => {
-    it("abort backstop sends SIGKILL not SIGTERM", async () => {
-      const model = mockModels[0] as any;
-      const context = {
-        messages: [{ role: "user", content: "Hello" }],
-      };
+  describe("abort before launch", () => {
+    it("returns a structured Pi abort without starting a CLI process", async () => {
       const controller = new AbortController();
-
-      streamViaCli(model, context, { signal: controller.signal });
-      await vi.advanceTimersByTimeAsync(0);
-
-      const proc = (spawn as any).mock.results[0].value;
-
       controller.abort();
-      // Let the interrupt grace elapse so the backstop fires.
-      await vi.advanceTimersByTimeAsync(2100);
-
-      expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
-      const sigTermCalls = proc.kill.mock.calls.filter(
-        (call: any[]) => call[0] === "SIGTERM",
+      streamViaCli(
+        mockModels[0] as any,
+        { messages: [{ role: "user", content: "Hello" }] },
+        { signal: controller.signal },
       );
-      expect(sigTermCalls).toHaveLength(0);
-
-      // Clean up
-      proc.stdout.end();
-      await vi.advanceTimersByTimeAsync(100);
-    });
-  });
-
-  describe("abort signal already aborted", () => {
-    it("winds down a pre-aborted signal via interrupt + backstop", async () => {
-      const model = mockModels[0] as any;
-      const context = {
-        messages: [{ role: "user", content: "Hello" }],
-      };
-      const controller = new AbortController();
-      controller.abort(); // Abort BEFORE calling streamViaCli
-
-      streamViaCli(model, context, { signal: controller.signal });
-      await vi.advanceTimersByTimeAsync(2100);
-
-      const proc = (spawn as any).mock.results[0].value;
-      expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
-
-      // Clean up
-      proc.stdout.end();
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawn).not.toHaveBeenCalled();
+      const terminal =
+        MockAssistantMessageEventStream.mock.instances[0]._events.find(
+          (e: any) => e.type === "error",
+        );
+      expect(terminal.error.stopReason).toBe("aborted");
+      expect(terminal.error.errorMessage).toContain("aborted");
     });
   });
 
@@ -2164,184 +2160,65 @@ describe("streamViaCli", () => {
     });
   });
 
-  describe("session mapping: one CLI session per pi session", () => {
-    // Observer mode resumes the CLI session recorded in the sidecar map
-    // (PI_CLAUDE_CLI_STATE_DIR), and reimports on anything suspicious.
-    const os = require("node:os");
+  describe("Pi-owned replay and disposable CLI sessions", () => {
     const fsx = require("node:fs");
     const pathx = require("node:path");
+    const os = require("node:os");
     let stateDir: string;
-
     beforeEach(() => {
       resetCliProcessesForTests();
-      stateDir = fsx.mkdtempSync(pathx.join(os.tmpdir(), "pcc-state-"));
-      process.env.PI_CLAUDE_CLI_STATE_DIR = stateDir;
-      // Pin the mode: which flag carries the prompt is asserted below, and an
-      // ambient PI_CLAUDE_CLI_SYSTEM_PROMPT would otherwise decide it.
-      process.env.PI_CLAUDE_CLI_SYSTEM_PROMPT = "claude";
+      stateDir = fsx.mkdtempSync(pathx.join(os.tmpdir(), "tether-pi-state-"));
+      process.env.PI_CLAUDE_TETHER_STATE_DIR = stateDir;
     });
-
     afterEach(() => {
-      delete process.env.PI_CLAUDE_CLI_STATE_DIR;
-      delete process.env.PI_CLAUDE_CLI_SYSTEM_PROMPT;
-      try {
-        fsx.rmSync(stateDir, { recursive: true, force: true });
-      } catch {
-        /* ignore */
-      }
+      delete process.env.PI_CLAUDE_TETHER_STATE_DIR;
+      fsx.rmSync(stateDir, { recursive: true, force: true });
     });
 
-    // The provider always pins the minting account; the helper mirrors
-    // it so resume tests exercise the current sidecar shape. Legacy plain
-    // strings are covered in tests/session-map.test.ts (reimport once).
-    const writeMap = (map: Record<string, string>) => {
-      const pinned: Record<string, { cliSessionId: string; account: string }> =
-        {};
-      for (const [pi, cli] of Object.entries(map)) {
-        pinned[pi] = { cliSessionId: cli, account: "default" };
-      }
-      fsx.writeFileSync(
-        pathx.join(stateDir, "session-map.json"),
-        JSON.stringify(pinned),
-      );
-    };
-    const readMapFile = (): Record<string, unknown> =>
-      JSON.parse(
-        fsx.readFileSync(pathx.join(stateDir, "session-map.json"), "utf-8"),
-      );
+    it.each([true, false])(
+      "mints a disposable CLI id without recording a pairing (Pi session supplied=%s)",
+      async (withSession) => {
+        streamViaCli(
+          mockModels[0] as any,
+          {
+            systemPrompt: "SYS-ONE",
+            messages: [{ role: "user", content: "Hello" }],
+          },
+          withSession ? ({ sessionId: "pi-session" } as any) : undefined,
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        const args = (spawn as any).mock.calls[0][1] as string[];
+        expect(args).not.toContain("--resume");
+        expect(args).toContain("--no-session-persistence");
+        const cliId = args[args.indexOf("--session-id") + 1];
+        expect(cliId).not.toBe("pi-session");
+        expect(cliId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(args).not.toContain("--append-system-prompt-file");
+        expect(
+          fsx.readFileSync(
+            args[args.indexOf("--system-prompt-file") + 1],
+            "utf8",
+          ),
+        ).toContain("SYS-ONE");
+        expect(fsx.existsSync(pathx.join(stateDir, "sysprompt"))).toBe(false);
+        expect(fsx.existsSync(pathx.join(stateDir, "session-map.json"))).toBe(
+          false,
+        );
+        (spawn as any).mock.results[0].value.stdout.end();
+        await vi.advanceTimersByTimeAsync(100);
+      },
+    );
 
-    const drain = async () => {
-      const proc = (spawn as any).mock.results[0].value;
-      proc.stdout.end();
-      await vi.advanceTimersByTimeAsync(100);
-    };
-
-    const ourAssistant = {
-      role: "assistant",
-      content: "Hi",
-      provider: "pi-claude-cli",
-      api: "pi-claude-cli",
-    };
-
-    it("resumes the mapped CLI session with a delta prompt, and still sends the system prompt", async () => {
-      writeMap({ "pi-sess-1": "cli-sess-9" });
-      const context = {
-        systemPrompt: "SYS",
-        messages: [
-          { role: "user", content: "FIRST" },
-          ourAssistant,
-          { role: "user", content: "SECOND" },
-        ],
-      };
-
-      streamViaCli(mockModels[0] as any, context, {
-        sessionId: "pi-sess-1",
-      } as any);
-      await vi.advanceTimersByTimeAsync(0);
-
-      const args = (spawn as any).mock.calls[0][1] as string[];
-      expect(args).toContain("--resume");
-      expect(args[args.indexOf("--resume") + 1]).toBe("cli-sess-9");
-      expect(args).not.toContain("--session-id");
-      // The CLI drops --system-prompt on resume, so it must be re-sent every
-      // turn or the session silently reverts to Claude Code's own prompt.
-      expect(args).toContain("--append-system-prompt-file");
-
-      const proc = (spawn as any).mock.results[0].value;
-      const sent = JSON.parse(
-        (proc.stdin.write as any).mock.calls[0][0] as string,
-      ).message.content as string;
-      // Delta only: the CLI session already holds FIRST and the reply.
-      expect(sent).toContain("SECOND");
-      expect(sent).not.toContain("FIRST");
-      await drain();
-    });
-
-    it("replays the stored prompt verbatim on resume, ignoring a drifted rebuild", async () => {
-      // Cache warmth depends on byte-identical bytes, and a rebuild is not
-      // byte-stable: buildSystemPrompt appends a tool-results paragraph as
-      // soon as history holds a toolResult. The stored copy must win.
-      writeMap({ "pi-sess-1": "cli-sess-9" });
-      fsx.mkdirSync(pathx.join(stateDir, "sysprompt"), { recursive: true });
-      fsx.writeFileSync(
-        pathx.join(stateDir, "sysprompt", "cli-sess-9.txt"),
-        "ORIGINAL PROMPT",
-      );
-
-      streamViaCli(
-        mockModels[0] as any,
-        {
-          systemPrompt: "DRIFTED PROMPT",
-          messages: [
-            { role: "user", content: "FIRST" },
-            ourAssistant,
-            { role: "toolResult", content: "r" },
-            { role: "user", content: "SECOND" },
-          ],
-        },
-        { sessionId: "pi-sess-1" } as any,
-      );
-      await vi.advanceTimersByTimeAsync(0);
-
-      const args = (spawn as any).mock.calls[0][1] as string[];
-      const promptFile = args[args.indexOf("--append-system-prompt-file") + 1];
-      expect(fsx.readFileSync(promptFile, "utf-8")).toBe("ORIGINAL PROMPT");
-      await drain();
-    });
-
-    it("stores the created prompt so the next turn can replay it", async () => {
-      streamViaCli(
-        mockModels[0] as any,
-        {
-          systemPrompt: "SYS-ONE",
-          messages: [{ role: "user", content: "Hello" }],
-        },
-        { sessionId: "pi-sess-store" } as any,
-      );
-      await vi.advanceTimersByTimeAsync(0);
-
-      const args = (spawn as any).mock.calls[0][1] as string[];
-      const cliId = args[args.indexOf("--session-id") + 1];
-      const stored = fsx.readFileSync(
-        pathx.join(stateDir, "sysprompt", `${cliId}.txt`),
-        "utf-8",
-      );
-      const promptFile = args[args.indexOf("--append-system-prompt-file") + 1];
-      // Byte-identical to what this very spawn sent.
-      expect(stored).toBe(fsx.readFileSync(promptFile, "utf-8"));
-      expect(stored).toContain("SYS-ONE");
-      await drain();
-    });
-
-    it("creates a fresh CLI session with a provider-minted id on the first turn", async () => {
-      const context = { messages: [{ role: "user", content: "Hello" }] };
-
-      streamViaCli(mockModels[0] as any, context, {
-        sessionId: "pi-sess-2",
-      } as any);
-      await vi.advanceTimersByTimeAsync(0);
-
-      const args = (spawn as any).mock.calls[0][1] as string[];
-      expect(args).not.toContain("--resume");
-      expect(args).toContain("--session-id");
-      const cliId = args[args.indexOf("--session-id") + 1];
-      // Never pi's id: forks reuse pi ids, and the CLI refuses a seen id.
-      expect(cliId).not.toBe("pi-sess-2");
-      expect(cliId).toMatch(/^[0-9a-f-]{36}$/);
-      // The mapping is recorded for the next turn to resume.
-      expect(readMapFile()["pi-sess-2"]).toMatchObject({
-        cliSessionId: cliId,
-        account: "default",
-      });
-      await drain();
-    });
-
-    it("reimports when a foreign-provider turn followed our last one (stale CLI session)", async () => {
-      writeMap({ "pi-sess-3": "cli-sess-old" });
+    it("replays complete Pi history, including foreign-provider turns, on a cold process", async () => {
       const context = {
         messages: [
           { role: "user", content: "FIRST" },
-          ourAssistant,
+          {
+            role: "assistant",
+            content: "Hi",
+            provider: "pi-claude-tether",
+            api: "pi-claude-tether",
+          },
           { role: "user", content: "SECOND" },
           {
             role: "assistant",
@@ -2351,69 +2228,21 @@ describe("streamViaCli", () => {
           { role: "user", content: "THIRD" },
         ],
       };
-
       streamViaCli(mockModels[0] as any, context, {
-        sessionId: "pi-sess-3",
+        sessionId: "pi-cold",
       } as any);
       await vi.advanceTimersByTimeAsync(0);
-
       const args = (spawn as any).mock.calls[0][1] as string[];
       expect(args).not.toContain("--resume");
-      expect(args).toContain("--session-id");
-
-      // Full history import, not a delta.
       const proc = (spawn as any).mock.results[0].value;
-      const sent = JSON.parse(
-        (proc.stdin.write as any).mock.calls[0][0] as string,
-      ).message.content as string;
-      expect(sent).toContain("FIRST");
-      expect(sent).toContain("THIRD");
-      await drain();
-    });
-
-    it("creates a fresh session when no sessionId option is given", async () => {
-      const context = {
-        messages: [
-          { role: "user", content: "Hello" },
-          ourAssistant,
-          { role: "user", content: "Follow-up" },
-        ],
-      };
-
-      streamViaCli(mockModels[0] as any, context);
-      await vi.advanceTimersByTimeAsync(0);
-
-      const args = (spawn as any).mock.calls[0][1] as string[];
-      expect(args).not.toContain("--resume");
-      expect(args).toContain("--session-id");
-      await drain();
-    });
-
-    it("clears the mapping when a turn fails, so the next turn reimports", async () => {
-      writeMap({ "pi-sess-4": "cli-sess-4" });
-      const context = {
-        messages: [
-          { role: "user", content: "FIRST" },
-          ourAssistant,
-          { role: "user", content: "SECOND" },
-        ],
-      };
-
-      streamViaCli(mockModels[0] as any, context, {
-        sessionId: "pi-sess-4",
-      } as any);
-      await vi.advanceTimersByTimeAsync(0);
-
-      const proc = (spawn as any).mock.results[0].value;
-      proc.stdout.write(
-        JSON.stringify({ type: "result", subtype: "error", error: "boom" }) +
-          "\n",
+      const sent = JSON.stringify(
+        JSON.parse(proc.stdin.write.mock.calls[0][0]).message.content,
       );
-      await vi.advanceTimersByTimeAsync(0);
+      for (const text of ["FIRST", "Hi", "SECOND", "from GLM", "THIRD"])
+        expect(sent).toContain(text);
+      expect(sent.indexOf("FIRST")).toBeLessThan(sent.indexOf("THIRD"));
       proc.stdout.end();
       await vi.advanceTimersByTimeAsync(100);
-
-      expect(readMapFile()["pi-sess-4"]).toBeUndefined();
     });
   });
 
@@ -2421,10 +2250,10 @@ describe("streamViaCli", () => {
     function findErrorText(): string {
       const mockStream = MockAssistantMessageEventStream.mock.instances[0];
       const doneEvent = mockStream._events.find(
-        (e: any) => e.type === "done" && e.message,
+        (e: any) => e.type === "error" && e.error,
       );
       expect(doneEvent).toBeDefined();
-      return (doneEvent.message.content ?? [])
+      return (doneEvent.error.content ?? [])
         .filter((c: any) => c.type === "text")
         .map((c: any) => c.text)
         .join("");

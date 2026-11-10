@@ -18,12 +18,7 @@ import {
   packageStateDir,
 } from "../src/data-dir";
 
-const LEGACY_DATA = join(
-  homedir(),
-  ".local",
-  "share",
-  "pi-claude-cli",
-);
+const LEGACY_DATA = join(homedir(), ".local", "share", "pi-claude-cli");
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -32,7 +27,7 @@ afterEach(() => {
 describe("package name routing", () => {
   it("recognizes only the public package name", () => {
     expect(isPublicPackageName("pi-claude-tether")).toBe(true);
-    expect(isPublicPackageName("@legacy/pi-claude-cli")).toBe(false);
+    expect(isPublicPackageName("@legacy/pi-claude-tether")).toBe(false);
     expect(isPublicPackageName("pi-claude-cli")).toBe(false);
     expect(isPublicPackageName(undefined)).toBe(false);
   });
@@ -43,9 +38,9 @@ describe("package name routing", () => {
   });
 
   it("keeps legacy and unknown package names on the legacy layout", () => {
-    expect(packageDataDir("@legacy/pi-claude-cli")).toBe(LEGACY_DATA);
+    expect(packageDataDir("@legacy/pi-claude-tether")).toBe(LEGACY_DATA);
     expect(packageDataDir("something-else")).toBe(LEGACY_DATA);
-    expect(packageLeaf("@legacy/pi-claude-cli")).toBe("pi-claude-cli");
+    expect(packageLeaf("@legacy/pi-claude-tether")).toBe("pi-claude-cli");
     expect(packageLeaf("something-else")).toBe("pi-claude-cli");
   });
 
@@ -108,16 +103,16 @@ describe("deep layouts", () => {
 describe("generic legacy layout", () => {
   it("uses generic legacy data, cli, state and ledger paths", () => {
     vi.stubEnv("XDG_DATA_HOME", "/tmp/should-not-apply");
-    vi.stubEnv("PI_CLAUDE_CLI_STATE_DIR", "");
+    vi.stubEnv("PI_CLAUDE_TETHER_STATE_DIR", "");
     // XDG_DATA_HOME must not move the legacy layout.
-    expect(packageDataDir("@legacy/pi-claude-cli")).toBe(LEGACY_DATA);
-    expect(packageCliBinDir("@legacy/pi-claude-cli")).toBe(
+    expect(packageDataDir("@legacy/pi-claude-tether")).toBe(LEGACY_DATA);
+    expect(packageCliBinDir("@legacy/pi-claude-tether")).toBe(
       join(LEGACY_DATA, "cli", "node_modules", ".bin"),
     );
-    expect(packageStateDir("@legacy/pi-claude-cli")).toBe(
+    expect(packageStateDir("@legacy/pi-claude-tether")).toBe(
       join(homedir(), ".pi", "agent", "pi-claude-cli"),
     );
-    expect(packageLedgerDir("@legacy/pi-claude-cli")).toBe(
+    expect(packageLedgerDir("@legacy/pi-claude-tether")).toBe(
       join(
         process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"),
         "pi-claude-cli",
@@ -125,14 +120,17 @@ describe("generic legacy layout", () => {
     );
   });
 
-  it("honors PI_CLAUDE_CLI_STATE_DIR first", () => {
-    vi.stubEnv("PI_CLAUDE_CLI_STATE_DIR", "/tmp/custom-state");
-    expect(packageStateDir("@legacy/pi-claude-cli")).toBe("/tmp/custom-state");
+  it("honors PI_CLAUDE_TETHER_STATE_DIR first", () => {
+    vi.stubEnv("PI_CLAUDE_TETHER_STATE_DIR", "/tmp/custom-state");
+    expect(packageStateDir("@legacy/pi-claude-tether")).toBe(
+      "/tmp/custom-state",
+    );
   });
 });
 
 describe("public layout", () => {
   it("uses XDG_DATA_HOME with a home fallback", () => {
+    vi.stubEnv("PI_CLAUDE_TETHER_STATE_DIR", "");
     vi.stubEnv("XDG_DATA_HOME", "/tmp/custom-data");
     expect(packageDataDir("pi-claude-tether")).toBe(
       "/tmp/custom-data/pi-claude-tether",

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock @earendil-works/pi-ai before importing event-bridge
 vi.mock("@earendil-works/pi-ai", () => ({
@@ -23,7 +23,7 @@ function createMockModel() {
   return {
     id: "claude-sonnet-4-5-20250929",
     name: "Claude Sonnet 4.5",
-    api: "pi-claude-cli",
+    api: "pi-claude-tether",
     provider: "anthropic",
     cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
     contextWindow: 200000,
@@ -345,9 +345,8 @@ describe("createEventBridge", () => {
     });
   });
 
-  // Observer mode: only HANDOFF tools (custom pi tools behind the MCP
-  // schema server) stream as pi toolCalls. Built-ins run natively in the CLI
-  // and surface as markers — see the marker and filtering suites.
+  // Only the explicit Pi handoff bridge may publish executable tool calls.
+  // Native CLI tools are disabled and unexpected frames must stay filtered.
   describe("tool_use content block streaming (handoff tools)", () => {
     it("pushes toolcall_start with mapped pi name on content_block_start", () => {
       const bridge = createBridgeWithStart();
@@ -1332,9 +1331,8 @@ describe("createEventBridge", () => {
       expect(stream.push).not.toHaveBeenCalled();
     });
 
-    // Observer mode: built-ins execute natively in the CLI and must NOT
-    // become pi toolCalls — they surface as markers via the envelope path.
-    it("filters built-in tools (Read, Write, etc.) — the CLI executes them", () => {
+    // Native tools are disabled. Unexpected native frames must not become Pi calls.
+    it("filters unexpected native tools (Read, Write, etc.) without executing them", () => {
       const bridge = createBridgeWithStart();
       bridge.handleEvent({
         type: "content_block_start",
@@ -1483,7 +1481,7 @@ describe("createEventBridge", () => {
 
       expect(output.role).toBe("assistant");
       expect(output.content).toEqual([]);
-      expect(output.api).toBe("pi-claude-cli");
+      expect(output.api).toBe("pi-claude-tether");
       expect(output.provider).toBe("anthropic");
       expect(output.model).toBe("claude-sonnet-4-5-20250929");
       expect(output.stopReason).toBe("stop");
@@ -1710,296 +1708,6 @@ describe("createEventBridge", () => {
       });
       // Context is the cycle's prompt, not the episode's summed billing.
       expect(bridge.getOutput().usage.totalTokens).toBe(8 + 23 + 13);
-    });
-  });
-
-  /**
-   * Tool result forwarding (PI_CLAUDE_CLI_TOOL_RESULTS=1).
-   *
-   * Observer mode makes the CLI execute its own tools; pi sees a call marker
-   * and, historically, nothing else — the `user` envelopes carrying each
-   * `tool_result` were dropped, so a front-end could show WHAT was invoked
-   * but never what came back, and its rows had nothing to expand into.
-   *
-   * With the host opt-in set, two richer marker shapes go on the wire:
-   *
-   *   [Claude Code · <ToolName> #<toolUseId> <argsJson>]   (id-tagged call)
-   *   [Claude Code · result #<toolUseId> <payloadJson>]    (its result)
-   *
-   * payloadJson is COMPLETE JSON: {status, preview, length, truncated?}.
-   * Without the flag the wire is byte-identical to before — a host that has
-   * not opted in must see no change at all.
-   */
-  describe("tool result forwarding (PI_CLAUDE_CLI_TOOL_RESULTS)", () => {
-    const FLAG = "PI_CLAUDE_CLI_TOOL_RESULTS";
-    let saved: string | undefined;
-    beforeEach(() => {
-      saved = process.env[FLAG];
-      delete process.env[FLAG];
-    });
-    afterEach(() => {
-      if (saved === undefined) delete process.env[FLAG];
-      else process.env[FLAG] = saved;
-    });
-
-    function assistantToolUse(bridge: any, id: string, name = "Read") {
-      bridge.handleAssistantEnvelope({
-        type: "assistant",
-        message: {
-          content: [
-            { type: "tool_use", id, name, input: { file_path: "/a.txt" } },
-          ],
-        },
-      });
-    }
-    function userResult(
-      bridge: any,
-      id: string,
-      content: unknown,
-      isError = false,
-    ) {
-      bridge.handleUserEnvelope({
-        type: "user",
-        message: {
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: id,
-              content,
-              is_error: isError || undefined,
-            },
-          ],
-        },
-      });
-    }
-    function markerTexts(bridge: any): string[] {
-      return bridge
-        .getOutput()
-        .content.filter((c: any) => c.type === "text")
-        .map((c: any) => c.text);
-    }
-    function resultPayload(text: string): any {
-      const m = /^\[Claude Code · result #(\S+) (.*)\]$/s.exec(text);
-      expect(m).not.toBeNull();
-      return { id: m![1], ...JSON.parse(m![2]!) };
-    }
-
-    describe("flag off (default)", () => {
-      it("keeps the call marker byte-identical to the historical shape", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        expect(markerTexts(bridge)).toEqual([
-          '[Claude Code · Read {"file_path":"/a.txt"}]',
-        ]);
-      });
-
-      it("drops tool results entirely", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        userResult(bridge, "t1", "hi");
-        expect(markerTexts(bridge)).toHaveLength(1);
-      });
-    });
-
-    describe("flag on", () => {
-      beforeEach(() => {
-        process.env[FLAG] = "1";
-      });
-
-      it("tags the call marker with the tool_use_id", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "toolu_fixture_abc");
-        expect(markerTexts(bridge)).toEqual([
-          '[Claude Code · Read #toolu_fixture_abc {"file_path":"/a.txt"}]',
-        ]);
-      });
-
-      it("tags a zero-argument call marker with the id and nothing else", () => {
-        const bridge = createBridgeWithStart();
-        bridge.handleAssistantEnvelope({
-          type: "assistant",
-          message: {
-            content: [{ type: "tool_use", id: "t9", name: "Bash", input: {} }],
-          },
-        });
-        expect(markerTexts(bridge)).toEqual(["[Claude Code · Bash #t9]"]);
-      });
-
-      it("forwards a string result as a parseable payload", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        userResult(bridge, "t1", "hi");
-        const texts = markerTexts(bridge);
-        expect(texts).toHaveLength(2);
-        expect(resultPayload(texts[1]!)).toEqual({
-          id: "t1",
-          status: "ok",
-          // Named after the call it answers, so a result row needs no pairing
-          // to know what ran, and measured even with nothing structured to
-          // read — see tests/tool-markers.test.ts for the metric shapes.
-          tool: "Read",
-          summary: "1 line",
-          lines: 1,
-          preview: "hi",
-          length: 2,
-        });
-      });
-
-      it("joins text blocks and ignores non-text blocks in array content", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        userResult(bridge, "t1", [
-          { type: "text", text: "line one" },
-          { type: "tool_reference", tool_name: "WebSearch" },
-          { type: "text", text: "line two" },
-        ]);
-        const payload = resultPayload(markerTexts(bridge)[1]!);
-        expect(payload.preview).toBe("line one\nline two");
-        expect(payload.status).toBe("ok");
-      });
-
-      it("marks an is_error result as status error", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        userResult(bridge, "t1", "Permission denied", true);
-        expect(resultPayload(markerTexts(bridge)[1]!).status).toBe("error");
-      });
-
-      it("caps the preview and reports the full length", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        const big = "x".repeat(5000);
-        userResult(bridge, "t1", big);
-        const payload = resultPayload(markerTexts(bridge)[1]!);
-        expect(payload.preview).toHaveLength(2000);
-        expect(payload.length).toBe(5000);
-        expect(payload.truncated).toBe(true);
-      });
-
-      it("round-trips newlines and quotes through the payload", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        userResult(bridge, "t1", 'a "quoted"\nsecond line]');
-        expect(resultPayload(markerTexts(bridge)[1]!).preview).toBe(
-          'a "quoted"\nsecond line]',
-        );
-      });
-
-      /**
-       * Handoff tools are pi-executed: pi has their REAL result, and their
-       * replayed tool_result arrives on the NEXT episode's stream. Their ids
-       * are never marked, so their results must never produce a marker —
-       * that would render the same result twice.
-       */
-      it("ignores results whose id was never marked (handoff / replay)", () => {
-        const bridge = createBridgeWithStart();
-        userResult(bridge, "toolu_handoff", "pi already has this");
-        expect(markerTexts(bridge)).toHaveLength(0);
-      });
-
-      it("forwards a duplicated result only once", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        userResult(bridge, "t1", "hi");
-        userResult(bridge, "t1", "hi");
-        expect(markerTexts(bridge)).toHaveLength(2);
-      });
-
-      it("ignores sub-agent envelopes (parent_tool_use_id set)", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        bridge.handleUserEnvelope({
-          type: "user",
-          parent_tool_use_id: "toolu_parent",
-          message: {
-            content: [
-              { type: "tool_result", tool_use_id: "t1", content: "internal" },
-            ],
-          },
-        });
-        expect(markerTexts(bridge)).toHaveLength(1);
-      });
-
-      it("streams the result marker as live text events, not only final content", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        stream.push.mockClear();
-        stream.events.length = 0;
-        userResult(bridge, "t1", "hi");
-        const kinds = stream.events.map((e: any) => e.type);
-        expect(kinds).toEqual(["text_start", "text_delta", "text_end"]);
-      });
-
-      it("treats empty content as an empty ok preview", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        userResult(bridge, "t1", undefined);
-        expect(resultPayload(markerTexts(bridge)[1]!)).toEqual({
-          id: "t1",
-          status: "ok",
-          tool: "Read",
-          summary: "empty",
-          preview: "",
-          length: 0,
-        });
-      });
-
-      /**
-       * `tool_use_result` rides on the ENVELOPE, one level above the block it
-       * describes, so it can only be attributed when the envelope carries a
-       * single result. A batched envelope must fall back to counting text
-       * rather than labelling one tool's outcome with another's metrics.
-       */
-      it("reads the envelope's tool_use_result into metrics", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        bridge.handleUserEnvelope({
-          type: "user",
-          message: {
-            content: [
-              { type: "tool_result", tool_use_id: "t1", content: "1\talpha" },
-            ],
-          },
-          tool_use_result: {
-            type: "text",
-            file: {
-              filePath: "/repo/a.txt",
-              numLines: 40,
-              startLine: 1,
-              totalLines: 400,
-            },
-          },
-        });
-        expect(resultPayload(markerTexts(bridge)[1]!)).toMatchObject({
-          tool: "Read",
-          summary: "lines 1-40 of 400",
-          path: "/repo/a.txt",
-          lines: 40,
-          totalLines: 400,
-        });
-      });
-
-      it("ignores tool_use_result when one envelope carries two results", () => {
-        const bridge = createBridgeWithStart();
-        assistantToolUse(bridge, "t1");
-        assistantToolUse(bridge, "t2", "Bash");
-        bridge.handleUserEnvelope({
-          type: "user",
-          message: {
-            content: [
-              { type: "tool_result", tool_use_id: "t1", content: "one" },
-              { type: "tool_result", tool_use_id: "t2", content: "two" },
-            ],
-          },
-          tool_use_result: { stdout: "two", stderr: "", interrupted: false },
-        });
-        const payloads = markerTexts(bridge).slice(2).map(resultPayload);
-        expect(payloads.map((p: any) => p.summary)).toEqual([
-          "1 line",
-          "1 line",
-        ]);
-        expect(payloads.every((p: any) => p.bytes === undefined)).toBe(true);
-      });
     });
   });
 });
